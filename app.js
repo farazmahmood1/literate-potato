@@ -30,6 +30,7 @@ import { errorHandler, notFound } from "./src/middlewares/error.middleware.js";
 
 const app = express();
 
+
 // Middleware
 app.use(cors({
   origin: process.env.NODE_ENV === "production"
