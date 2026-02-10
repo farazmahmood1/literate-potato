@@ -1,5 +1,22 @@
 import { Expo } from "expo-server-sdk";
 import prisma from "../lib/prisma.js";
+import {
+  emailConsultationAccepted,
+  emailConsultationCompleted,
+  emailConsultationCancelled,
+  emailNewConsultationRequest,
+  emailPaymentConfirmation,
+  emailPaymentReceived,
+  emailPaymentFailed,
+  emailNewReview,
+  emailNewJobPost,
+  emailJobPostAccepted,
+  emailVerificationApproved,
+  emailVerificationRejected,
+  emailDisputeOpened,
+  emailDisputeResolved,
+  emailDisputeEscalated,
+} from "./email.service.js";
 
 const expo = new Expo();
 
@@ -93,7 +110,7 @@ export async function sendToUserIfAllowed(userId, preferenceKey, title, body, da
 /**
  * Notify client that lawyer accepted & trial started.
  */
-export function notifyConsultationAccepted(clientId, lawyerName, consultationId, trialEndAt) {
+export function notifyConsultationAccepted(clientId, lawyerName, consultationId, trialEndAt, category) {
   sendToUserIfAllowed(clientId, "consultationUpdates", "Consultation Accepted",
     `Attorney ${lawyerName} has accepted your consultation request.`,
     { type: "consultation_accepted", consultationId }
@@ -104,6 +121,9 @@ export function notifyConsultationAccepted(clientId, lawyerName, consultationId,
     `Your 3-minute trial with ${lawyerName} has begun.`,
     { type: "trial_started", consultationId, trialEndAt }
   );
+
+  // Email
+  emailConsultationAccepted(clientId, lawyerName, consultationId, category);
 }
 
 /**
@@ -124,6 +144,8 @@ export function notifyConsultationCompleted(clientId, lawyerName, consultationId
     `Your consultation with ${lawyerName} is complete. Leave a review!`,
     { type: "consultation_completed", consultationId }
   );
+
+  emailConsultationCompleted(clientId, lawyerName, consultationId);
 }
 
 /**
@@ -134,6 +156,8 @@ export function notifyConsultationCancelled(clientId, lawyerName, consultationId
     `Attorney ${lawyerName} has cancelled the consultation.`,
     { type: "consultation_cancelled", consultationId }
   );
+
+  emailConsultationCancelled(clientId, lawyerName);
 }
 
 // ─────────────────────────────────────────────────────
@@ -322,6 +346,8 @@ export function notifyPaymentReceived(lawyerUserId, clientName, amountCents, con
     `You received $${dollars} from ${clientName}.`,
     { type: "payment_received", consultationId, amount: amountCents }
   );
+
+  emailPaymentReceived(lawyerUserId, clientName, amountCents, consultationId);
 }
 
 /**
@@ -333,6 +359,8 @@ export function notifyPaymentSucceeded(clientUserId, lawyerName, amountCents, co
     `Your payment of $${dollars} to ${lawyerName} was successful.`,
     { type: "payment_succeeded", consultationId, amount: amountCents }
   );
+
+  emailPaymentConfirmation(clientUserId, lawyerName, amountCents, consultationId);
 }
 
 /**
@@ -344,6 +372,8 @@ export function notifyPaymentFailed(clientUserId, amountCents, consultationId) {
     `Your payment of $${dollars} failed. Please update your payment method.`,
     { type: "payment_failed", consultationId, amount: amountCents }
   );
+
+  emailPaymentFailed(clientUserId, amountCents);
 }
 
 /**
@@ -375,12 +405,14 @@ export function notifyPayoutFailed(lawyerUserId, amountCents) {
 /**
  * Notify lawyer of a new review.
  */
-export function notifyNewReview(lawyerUserId, reviewerName, rating, consultationId) {
+export function notifyNewReview(lawyerUserId, reviewerName, rating, consultationId, comment) {
   const stars = rating === 1 ? "1-star" : `${rating}-star`;
   sendToUserIfAllowed(lawyerUserId, "consultationUpdates", "New Review",
     `${reviewerName} left you a ${stars} review!`,
     { type: "new_review", consultationId, rating }
   );
+
+  emailNewReview(lawyerUserId, reviewerName, rating, comment);
 }
 
 /**
@@ -400,21 +432,25 @@ export function notifyRatingMilestone(lawyerUserId, fiveStarCount) {
 /**
  * Notify lawyer that their profile was verified by admin.
  */
-export function notifyVerificationApproved(lawyerUserId) {
+export function notifyVerificationApproved(lawyerUserId, lawyerName) {
   sendToUserIfAllowed(lawyerUserId, "securityAlerts", "Verification Approved",
     "Your profile has been verified. You're now visible to clients.",
     { type: "verification_approved" }
   );
+
+  emailVerificationApproved(lawyerUserId, lawyerName || "Attorney");
 }
 
 /**
  * Notify lawyer that their verification was rejected.
  */
-export function notifyVerificationRejected(lawyerUserId) {
+export function notifyVerificationRejected(lawyerUserId, lawyerName) {
   sendToUserIfAllowed(lawyerUserId, "securityAlerts", "Verification Update",
     "Your verification was not approved. Please resubmit documents.",
     { type: "verification_rejected" }
   );
+
+  emailVerificationRejected(lawyerUserId, lawyerName || "Attorney");
 }
 
 /**
@@ -444,21 +480,25 @@ export function notifyPasswordChanged(userId) {
 /**
  * Notify a lawyer about a new job post in their state.
  */
-export function notifyNewJobPost(lawyerUserId, clientName, category, state, jobPostId) {
+export function notifyNewJobPost(lawyerUserId, clientName, category, state, jobPostId, description) {
   sendToUserIfAllowed(lawyerUserId, "consultationUpdates", "New Job Post",
     `${clientName} needs help with ${category} in ${state}. First 3 min free.`,
     { type: "new_job_post", jobPostId, category, state }
   );
+
+  emailNewJobPost(lawyerUserId, clientName, category, state, description, jobPostId);
 }
 
 /**
  * Notify client that a lawyer accepted their job post.
  */
-export function notifyJobPostAccepted(clientUserId, lawyerName, jobPostId, consultationId) {
+export function notifyJobPostAccepted(clientUserId, lawyerName, jobPostId, consultationId, category) {
   sendToUserIfAllowed(clientUserId, "consultationUpdates", "Job Post Accepted",
     `Attorney ${lawyerName} has accepted your job post. A 3-minute free trial has started.`,
     { type: "job_post_accepted", jobPostId, consultationId }
   );
+
+  emailJobPostAccepted(clientUserId, lawyerName, category, consultationId);
 }
 
 // ─────────────────────────────────────────────────────
@@ -492,4 +532,89 @@ export async function sendInactivityReminders() {
       );
     }
   }
+}
+
+// ─────────────────────────────────────────────────────
+// Dispute notifications
+// ─────────────────────────────────────────────────────
+
+/**
+ * Notify lawyer that a dispute was opened against them.
+ */
+export function notifyDisputeOpened(lawyerUserId, clientName, category, disputeId) {
+  sendToUserIfAllowed(lawyerUserId, "consultationUpdates", "Dispute Opened",
+    `${clientName} has filed a dispute regarding ${category}.`,
+    { type: "dispute_opened", disputeId }
+  );
+
+  emailDisputeOpened(lawyerUserId, clientName, category, disputeId);
+}
+
+/**
+ * Notify client that the lawyer responded to the dispute.
+ */
+export function notifyDisputeResponse(clientUserId, lawyerName, disputeId) {
+  sendToUserIfAllowed(clientUserId, "consultationUpdates", "Dispute Response",
+    `Attorney ${lawyerName} has responded to your dispute.`,
+    { type: "dispute_response", disputeId }
+  );
+}
+
+/**
+ * Notify user that the dispute was escalated to admin.
+ */
+export function notifyDisputeEscalated(userId, disputeId) {
+  sendToUserIfAllowed(userId, "consultationUpdates", "Dispute Escalated",
+    "The dispute has been escalated to admin review.",
+    { type: "dispute_escalated", disputeId }
+  );
+
+  emailDisputeEscalated(userId, disputeId);
+}
+
+/**
+ * Notify user of dispute resolution.
+ */
+export function notifyDisputeResolved(userId, resolutionType, refundAmount, disputeId) {
+  const refundStr = refundAmount ? ` — $${(refundAmount / 100).toFixed(2)} refunded` : "";
+  const typeLabel = resolutionType.replace(/_/g, " ").toLowerCase();
+  sendToUserIfAllowed(userId, "consultationUpdates", "Dispute Resolved",
+    `Your dispute has been resolved: ${typeLabel}${refundStr}.`,
+    { type: "dispute_resolved", disputeId, resolutionType, refundAmount }
+  );
+
+  emailDisputeResolved(userId, resolutionType, refundAmount, disputeId);
+}
+
+/**
+ * Notify other party when evidence is added.
+ */
+export function notifyDisputeEvidenceAdded(userId, submitterName, disputeId) {
+  sendToUserIfAllowed(userId, "consultationUpdates", "New Evidence",
+    `${submitterName} added evidence to the dispute.`,
+    { type: "dispute_evidence", disputeId }
+  );
+}
+
+/**
+ * Notify other party when a resolution is proposed.
+ */
+export function notifyDisputeProposal(userId, proposerName, disputeId) {
+  sendToUserIfAllowed(userId, "consultationUpdates", "Resolution Proposed",
+    `${proposerName} has proposed a resolution for the dispute.`,
+    { type: "dispute_proposal", disputeId }
+  );
+}
+
+/**
+ * Notify user of approaching deadline.
+ */
+export function notifyDisputeDeadline(userId, disputeId, deadlineType) {
+  const msg = deadlineType === "lawyer_response"
+    ? "You have 24 hours to respond to the dispute."
+    : "The mediation period ends in 24 hours.";
+  sendToUserIfAllowed(userId, "consultationUpdates", "Dispute Deadline",
+    msg,
+    { type: "dispute_deadline", disputeId, deadlineType }
+  );
 }

@@ -11,6 +11,10 @@ import {
   getReports,
   updateReport,
   toggleUserSuspension,
+  getAdminDisputes,
+  getAdminDisputeDetail,
+  resolveDispute,
+  addAdminNote,
 } from "../controllers/admin.controller.js";
 
 const router = Router();
@@ -30,5 +34,9 @@ router.get("/consultations", getConsultations);
 router.get("/payments", getPayments);
 router.get("/reports", getReports);
 router.put("/reports/:id", updateReport);
+router.get("/disputes", getAdminDisputes);
+router.get("/disputes/:id", getAdminDisputeDetail);
+router.put("/disputes/:id/resolve", resolveDispute);
+router.post("/disputes/:id/note", addAdminNote);
 
 export default router;

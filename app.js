@@ -25,11 +25,11 @@ import fileUploadRoutes from "./src/routes/file-upload.routes.js";
 import adminRoutes from "./src/routes/admin.routes.js";
 import callRoutes from "./src/routes/call.routes.js";
 import jobPostRoutes from "./src/routes/job-post.routes.js";
+import disputeRoutes from "./src/routes/dispute.routes.js";
 import webRegisterRoutes from "./src/routes/web-register.routes.js";
 import { errorHandler, notFound } from "./src/middlewares/error.middleware.js";
 
 const app = express();
-
 
 // Middleware
 app.use(cors({
@@ -76,6 +76,7 @@ app.use("/api/schedule", scheduleRoutes);
 app.use("/api/files", fileUploadRoutes);
 app.use("/api/calls", callRoutes);
 app.use("/api/job-posts", jobPostRoutes);
+app.use("/api/disputes", disputeRoutes);
 app.use("/api/web-register", webRegisterRoutes);
 
 // Error handling

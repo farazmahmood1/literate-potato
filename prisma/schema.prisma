@@ -57,6 +57,32 @@ enum ReportStatus {
   DISMISSED
 }
 
+enum DisputeStatus {
+  OPEN
+  LAWYER_RESPONSE
+  MEDIATION
+  ESCALATED
+  RESOLVED
+  CLOSED
+}
+
+enum DisputeCategory {
+  QUALITY
+  COMMUNICATION
+  BILLING
+  CONDUCT
+  INCOMPLETE
+  OTHER
+}
+
+enum DisputeResolutionType {
+  FULL_REFUND
+  PARTIAL_REFUND
+  NO_REFUND
+  MUTUAL_AGREEMENT
+  DISMISSED
+}
+
 model User {
   id              String    @id @default(uuid())
   clerkId         String    @unique
@@ -67,6 +93,7 @@ model User {
   avatar          String?
   role            Role      @default(CLIENT)
   isVerified      Boolean   @default(false)
+  suspended       Boolean   @default(false)
   expoPushToken   String?
   lastActiveAt    DateTime?
   notificationPreferences Json?
@@ -86,6 +113,13 @@ model User {
   referralsGiven        Referral[]      @relation("ReferralsGiven")
   referralsReceived     Referral[]      @relation("ReferralsReceived")
   jobPosts              JobPost[]       @relation("ClientJobPosts")
+  callsInitiated        Call[]          @relation("CallsInitiated")
+  callsReceived         Call[]          @relation("CallsReceived")
+  disputesFiled         Dispute[]       @relation("DisputesFiled")
+  disputesReceived      Dispute[]       @relation("DisputesReceived")
+  disputesResolved      Dispute[]       @relation("DisputesResolved")
+  evidenceSubmitted     DisputeEvidence[] @relation("EvidenceSubmitted")
+  disputeEvents         DisputeEvent[]  @relation("DisputeEventActors")
 
   @@map("users")
 }
@@ -156,6 +190,8 @@ model Consultation {
   messages      Message[]
   serviceOffers ServiceOffer[]
   jobPost       JobPost?       @relation("JobPostConsultation")
+  calls         Call[]
+  disputes      Dispute[]
 
   @@map("consultations")
 }
@@ -338,4 +374,95 @@ model JobPostView {
 
   @@unique([jobPostId, lawyerId])
   @@map("job_post_views")
+}
+
+model Call {
+  id              String   @id @default(uuid())
+  consultationId  String
+  initiatorId     String
+  receiverId      String
+  type            String   // "voice" | "video"
+  status          String   @default("RINGING") // RINGING | ACTIVE | ENDED | DECLINED | MISSED
+  channelName     String   @unique
+  initiatorUid    Int
+  receiverUid     Int
+  initiatorName   String
+  receiverName    String
+  startedAt       DateTime?
+  endedAt         DateTime?
+  duration        Int?     // seconds
+  createdAt       DateTime @default(now())
+
+  consultation    Consultation @relation(fields: [consultationId], references: [id])
+  initiator       User         @relation("CallsInitiated", fields: [initiatorId], references: [id])
+  receiver        User         @relation("CallsReceived", fields: [receiverId], references: [id])
+
+  @@index([consultationId])
+  @@index([status])
+  @@map("calls")
+}
+
+model Dispute {
+  id                String                 @id @default(uuid())
+  consultationId    String
+  filedById         String
+  filedAgainstId    String
+  category          DisputeCategory
+  description       String
+  status            DisputeStatus          @default(OPEN)
+  resolutionType    DisputeResolutionType?
+  resolutionNote    String?
+  refundAmount      Int?
+  stripeRefundId    String?
+  resolvedById      String?
+  resolvedAt        DateTime?
+  lawyerDeadline    DateTime?
+  mediationDeadline DateTime?
+  proposedBy        String?
+  proposedResolution Json?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  consultation      Consultation           @relation(fields: [consultationId], references: [id])
+  filedBy           User                   @relation("DisputesFiled", fields: [filedById], references: [id])
+  filedAgainst      User                   @relation("DisputesReceived", fields: [filedAgainstId], references: [id])
+  resolvedBy        User?                  @relation("DisputesResolved", fields: [resolvedById], references: [id])
+  evidence          DisputeEvidence[]
+  timeline          DisputeEvent[]
+
+  @@index([consultationId])
+  @@index([status])
+  @@map("disputes")
+}
+
+model DisputeEvidence {
+  id            String   @id @default(uuid())
+  disputeId     String
+  submittedById String
+  type          String   // "text" | "image" | "document"
+  content       String
+  fileName      String?
+  mimeType      String?
+  createdAt     DateTime @default(now())
+
+  dispute       Dispute  @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  submittedBy   User     @relation("EvidenceSubmitted", fields: [submittedById], references: [id])
+
+  @@map("dispute_evidence")
+}
+
+model DisputeEvent {
+  id          String   @id @default(uuid())
+  disputeId   String
+  actorId     String?
+  action      String
+  description String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  dispute     Dispute  @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  actor       User?    @relation("DisputeEventActors", fields: [actorId], references: [id])
+
+  @@index([disputeId, createdAt])
+  @@map("dispute_events")
 }

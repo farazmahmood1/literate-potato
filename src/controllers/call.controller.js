@@ -8,13 +8,6 @@ import {
   notifyMissedCall,
 } from "../services/notification.service.js";
 
-// ─── In-memory call store (MVP — replace with DB table later) ───
-const activeCalls = new Map();
-
-function generateCallId() {
-  return `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-}
-
 /** Convert a userId string to a stable integer UID for Agora */
 function userIdToUid(userId) {
   let hash = 0;
@@ -83,39 +76,32 @@ export const initiateCall = asyncHandler(async (req, res) => {
     ? `${consultation.lawyer.user.firstName} ${consultation.lawyer.user.lastName}`.trim()
     : `${consultation.client.firstName} ${consultation.client.lastName}`.trim();
 
-  // Create call record in memory
-  const callId = generateCallId();
-  const channelName = callId; // use callId as Agora channel name
-
   // Generate Agora UIDs and token for the initiator
   const initiatorUid = userIdToUid(req.user.id);
   const receiverUid = userIdToUid(otherPartyUserId);
-  const initiatorToken = generateRtcToken(channelName, initiatorUid, "publisher");
 
-  const callData = {
-    id: callId,
-    consultationId,
-    initiatorId: req.user.id,
-    receiverId: otherPartyUserId,
-    type,
-    status: "RINGING",
-    initiatorName,
-    receiverName,
-    channelName,
-    initiatorUid,
-    receiverUid,
-    startedAt: null,
-    endedAt: null,
-    duration: null,
-    createdAt: new Date().toISOString(),
-  };
+  // Create call record in database
+  const call = await prisma.call.create({
+    data: {
+      consultationId,
+      initiatorId: req.user.id,
+      receiverId: otherPartyUserId,
+      type,
+      status: "RINGING",
+      channelName: `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      initiatorUid,
+      receiverUid,
+      initiatorName,
+      receiverName,
+    },
+  });
 
-  activeCalls.set(callId, callData);
+  const initiatorToken = generateRtcToken(call.channelName, initiatorUid, "publisher");
 
   // Emit incoming-call to the other party via their personal room
   const io = getIO();
   io.to(`user:${otherPartyUserId}`).emit("incoming-call", {
-    callId,
+    callId: call.id,
     consultationId,
     callerName: initiatorName,
     callType: type,
@@ -124,30 +110,35 @@ export const initiateCall = asyncHandler(async (req, res) => {
 
   // Push notification for incoming call
   if (type === "video") {
-    notifyIncomingVideoCall(otherPartyUserId, initiatorName, consultationId, callId);
+    notifyIncomingVideoCall(otherPartyUserId, initiatorName, consultationId, call.id);
   } else {
-    notifyIncomingCall(otherPartyUserId, initiatorName, consultationId, callId);
+    notifyIncomingCall(otherPartyUserId, initiatorName, consultationId, call.id);
   }
 
   // Auto-expire ringing after 60 seconds
-  setTimeout(() => {
-    const call = activeCalls.get(callId);
-    if (call && call.status === "RINGING") {
-      call.status = "MISSED";
-      activeCalls.set(callId, call);
+  setTimeout(async () => {
+    try {
+      const current = await prisma.call.findUnique({ where: { id: call.id } });
+      if (current && current.status === "RINGING") {
+        await prisma.call.update({
+          where: { id: call.id },
+          data: { status: "MISSED" },
+        });
 
-      io.to(`user:${req.user.id}`).emit("call-missed", { callId });
-      io.to(`user:${otherPartyUserId}`).emit("call-missed", { callId });
+        io.to(`user:${req.user.id}`).emit("call-missed", { callId: call.id });
+        io.to(`user:${otherPartyUserId}`).emit("call-missed", { callId: call.id });
 
-      // Push notification for missed call
-      notifyMissedCall(otherPartyUserId, initiatorName, consultationId, callId);
+        notifyMissedCall(otherPartyUserId, initiatorName, consultationId, call.id);
+      }
+    } catch (err) {
+      console.error("[Call] Auto-expire error:", err.message);
     }
   }, 60000);
 
   res.status(201).json({
     success: true,
     data: {
-      ...callData,
+      ...call,
       agoraAppId: AGORA_APP_ID,
       agoraToken: initiatorToken,
       agoraUid: initiatorUid,
@@ -159,7 +150,7 @@ export const initiateCall = asyncHandler(async (req, res) => {
 // @route   PUT /api/calls/:callId/accept
 export const acceptCall = asyncHandler(async (req, res) => {
   const { callId } = req.params;
-  const call = activeCalls.get(callId);
+  const call = await prisma.call.findUnique({ where: { id: callId } });
 
   if (!call) {
     res.status(404);
@@ -177,28 +168,30 @@ export const acceptCall = asyncHandler(async (req, res) => {
     throw new Error(`Call cannot be accepted — current status: ${call.status}`);
   }
 
-  call.status = "ACTIVE";
-  call.startedAt = new Date().toISOString();
-  activeCalls.set(callId, call);
+  const startedAt = new Date();
+  const updated = await prisma.call.update({
+    where: { id: callId },
+    data: { status: "ACTIVE", startedAt },
+  });
 
   // Generate Agora token for the receiver
   const receiverToken = generateRtcToken(call.channelName, call.receiverUid, "publisher");
 
-  // Notify the initiator (they already have their token)
+  // Notify both parties
   const io = getIO();
   io.to(`user:${call.initiatorId}`).emit("call-accepted", {
     callId,
-    acceptedAt: call.startedAt,
+    acceptedAt: startedAt.toISOString(),
   });
   io.to(`user:${call.receiverId}`).emit("call-accepted", {
     callId,
-    acceptedAt: call.startedAt,
+    acceptedAt: startedAt.toISOString(),
   });
 
   res.json({
     success: true,
     data: {
-      ...call,
+      ...updated,
       agoraAppId: AGORA_APP_ID,
       agoraToken: receiverToken,
       agoraUid: call.receiverUid,
@@ -210,7 +203,7 @@ export const acceptCall = asyncHandler(async (req, res) => {
 // @route   PUT /api/calls/:callId/decline
 export const declineCall = asyncHandler(async (req, res) => {
   const { callId } = req.params;
-  const call = activeCalls.get(callId);
+  const call = await prisma.call.findUnique({ where: { id: callId } });
 
   if (!call) {
     res.status(404);
@@ -228,8 +221,10 @@ export const declineCall = asyncHandler(async (req, res) => {
     throw new Error(`Call cannot be declined — current status: ${call.status}`);
   }
 
-  call.status = "DECLINED";
-  activeCalls.set(callId, call);
+  const updated = await prisma.call.update({
+    where: { id: callId },
+    data: { status: "DECLINED" },
+  });
 
   // Notify the initiator
   const io = getIO();
@@ -237,7 +232,7 @@ export const declineCall = asyncHandler(async (req, res) => {
 
   res.json({
     success: true,
-    data: call,
+    data: updated,
   });
 });
 
@@ -245,7 +240,7 @@ export const declineCall = asyncHandler(async (req, res) => {
 // @route   PUT /api/calls/:callId/end
 export const endCall = asyncHandler(async (req, res) => {
   const { callId } = req.params;
-  const call = activeCalls.get(callId);
+  const call = await prisma.call.findUnique({ where: { id: callId } });
 
   if (!call) {
     res.status(404);
@@ -263,39 +258,33 @@ export const endCall = asyncHandler(async (req, res) => {
     throw new Error("Call has already ended");
   }
 
-  call.status = "ENDED";
-  call.endedAt = new Date().toISOString();
+  const endedAt = new Date();
+  let duration = 0;
 
   // Calculate duration in seconds (only if the call was active)
   if (call.startedAt) {
-    const start = new Date(call.startedAt).getTime();
-    const end = new Date(call.endedAt).getTime();
-    call.duration = Math.round((end - start) / 1000);
-  } else {
-    call.duration = 0;
+    duration = Math.round((endedAt.getTime() - new Date(call.startedAt).getTime()) / 1000);
   }
 
-  activeCalls.set(callId, call);
+  const updated = await prisma.call.update({
+    where: { id: callId },
+    data: { status: "ENDED", endedAt, duration },
+  });
 
   // Notify both parties
   const io = getIO();
   const endPayload = {
     callId,
-    duration: call.duration,
-    endedAt: call.endedAt,
+    duration,
+    endedAt: endedAt.toISOString(),
   };
 
   io.to(`user:${call.initiatorId}`).emit("call-ended", endPayload);
   io.to(`user:${call.receiverId}`).emit("call-ended", endPayload);
 
-  // Clean up after a short delay (keep in memory briefly for late queries)
-  setTimeout(() => {
-    activeCalls.delete(callId);
-  }, 30000);
-
   res.json({
     success: true,
-    data: call,
+    data: updated,
   });
 });
 
@@ -303,7 +292,7 @@ export const endCall = asyncHandler(async (req, res) => {
 // @route   GET /api/calls/:callId/token
 export const getCallToken = asyncHandler(async (req, res) => {
   const { callId } = req.params;
-  const call = activeCalls.get(callId);
+  const call = await prisma.call.findUnique({ where: { id: callId } });
 
   if (!call) {
     res.status(404);
