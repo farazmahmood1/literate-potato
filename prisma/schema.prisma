@@ -1,0 +1,341 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CLIENT
+  LAWYER
+  ADMIN
+}
+
+enum ConsultationStatus {
+  PENDING
+  TRIAL
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+enum MessageType {
+  TEXT
+  SYSTEM
+  IMAGE
+  DOCUMENT
+}
+
+enum ServiceOfferStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  COMPLETED
+  CANCELLED
+}
+
+enum JobPostStatus {
+  OPEN
+  ACCEPTED
+  CLOSED
+  EXPIRED
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  ACTIONED
+  DISMISSED
+}
+
+model User {
+  id              String    @id @default(uuid())
+  clerkId         String    @unique
+  email           String    @unique
+  firstName       String
+  lastName        String
+  phone           String?
+  avatar          String?
+  role            Role      @default(CLIENT)
+  isVerified      Boolean   @default(false)
+  expoPushToken   String?
+  lastActiveAt    DateTime?
+  notificationPreferences Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  lawyerProfile         LawyerProfile?
+  consultationsAsClient Consultation[]  @relation("ClientConsultations")
+  payments              Payment[]
+  reviews               Review[]
+  messages              Message[]       @relation("UserMessages")
+  reportsGiven          Report[]        @relation("ReportsGiven")
+  reportsReceived       Report[]        @relation("ReportsReceived")
+  blocksGiven           Block[]         @relation("BlocksGiven")
+  blocksReceived        Block[]         @relation("BlocksReceived")
+  savedLawyers          SavedLawyer[]   @relation("UserSavedLawyers")
+  referralsGiven        Referral[]      @relation("ReferralsGiven")
+  referralsReceived     Referral[]      @relation("ReferralsReceived")
+  jobPosts              JobPost[]       @relation("ClientJobPosts")
+
+  @@map("users")
+}
+
+model LawyerProfile {
+  id                  String   @id @default(uuid())
+  userId              String   @unique
+  barNumber           String   @unique
+  licenseState        String
+  title               String?
+  specializations     String[]
+  bio                 String?
+  professionalSummary String?
+  yearsExperience     Int      @default(0)
+  consultationRate    Int      @default(3000) // in cents
+  languages           String[] @default(["English"])
+  isAvailable         Boolean  @default(true)
+  onlineStatus        String   @default("offline") // "online" | "offline" | "busy"
+  rating              Float    @default(0)
+  totalReviews        Int      @default(0)
+  stripeAccountId     String?
+  verificationStatus  String   @default("PENDING") // "PENDING" | "VERIFIED" | "REJECTED"
+  education           Json?    // [{institution, degree, year}]
+  previousFirms       Json?    // [{name, role, years}]
+  certifications      Json?    // [{name, issuer, year}]
+  courtLevels         String[] @default([])
+  linkedInUrl         String?
+  profilePhoto        String?
+  licenseImage        String?
+  idImage             String?
+  lastActiveAt        DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  consultations    Consultation[] @relation("LawyerConsultations")
+  reviews          Review[]
+  serviceOffers    ServiceOffer[]
+  savedByUsers     SavedLawyer[]  @relation("LawyerSavedByUsers")
+  acceptedJobPosts JobPost[]      @relation("AcceptedJobPosts")
+  jobPostViews     JobPostView[]  @relation("LawyerJobPostViews")
+
+  @@map("lawyer_profiles")
+}
+
+model Consultation {
+  id          String             @id @default(uuid())
+  clientId    String
+  lawyerId    String
+  category    String
+  description String
+  status        ConsultationStatus @default(PENDING)
+  requestedType String?            // null = messaging only, 'audio' or 'video' = formal consultation request
+  startedAt     DateTime?
+  endedAt       DateTime?
+  trialEndAt    DateTime?
+  summary     Json?
+  scheduledAt DateTime?
+  isScheduled Boolean            @default(false)
+  notes       String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  client        User             @relation("ClientConsultations", fields: [clientId], references: [id])
+  lawyer        LawyerProfile    @relation("LawyerConsultations", fields: [lawyerId], references: [id])
+  payment       Payment?
+  review        Review?
+  messages      Message[]
+  serviceOffers ServiceOffer[]
+  jobPost       JobPost?       @relation("JobPostConsultation")
+
+  @@map("consultations")
+}
+
+model Message {
+  id              String      @id @default(uuid())
+  consultationId  String
+  senderId        String
+  content         String
+  messageType     MessageType @default(TEXT)
+  isRead          Boolean     @default(false)
+  readAt          DateTime?
+  fileUrl         String?
+  fileName        String?
+  fileSize        Int?
+  mimeType        String?
+  createdAt       DateTime    @default(now())
+
+  consultation    Consultation @relation(fields: [consultationId], references: [id])
+  sender          User         @relation("UserMessages", fields: [senderId], references: [id])
+
+  @@index([consultationId, createdAt])
+  @@map("messages")
+}
+
+model Payment {
+  id               String        @id @default(uuid())
+  userId           String
+  consultationId   String        @unique
+  stripePaymentId  String?       @unique
+  amount           Int           // in cents
+  status           PaymentStatus @default(PENDING)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  user             User          @relation(fields: [userId], references: [id])
+  consultation     Consultation  @relation(fields: [consultationId], references: [id])
+
+  @@map("payments")
+}
+
+model Review {
+  id              String        @id @default(uuid())
+  consultationId  String        @unique
+  reviewerId      String
+  lawyerProfileId String
+  rating          Int
+  comment         String?
+  createdAt       DateTime      @default(now())
+
+  consultation    Consultation  @relation(fields: [consultationId], references: [id])
+  reviewer        User          @relation(fields: [reviewerId], references: [id])
+  lawyerProfile   LawyerProfile @relation(fields: [lawyerProfileId], references: [id])
+
+  @@map("reviews")
+}
+
+model ServiceOffer {
+  id              String             @id @default(uuid())
+  consultationId  String
+  lawyerId        String
+  title           String
+  description     String
+  price           Int                // cents
+  estimatedDays   Int?
+  status          ServiceOfferStatus @default(PENDING)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  consultation    Consultation       @relation(fields: [consultationId], references: [id])
+  lawyer          LawyerProfile      @relation(fields: [lawyerId], references: [id])
+
+  @@map("service_offers")
+}
+
+model SavedLawyer {
+  id              String   @id @default(uuid())
+  userId          String
+  lawyerProfileId String
+  createdAt       DateTime @default(now())
+
+  user            User          @relation("UserSavedLawyers", fields: [userId], references: [id], onDelete: Cascade)
+  lawyerProfile   LawyerProfile @relation("LawyerSavedByUsers", fields: [lawyerProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lawyerProfileId])
+  @@map("saved_lawyers")
+}
+
+model Report {
+  id          String       @id @default(uuid())
+  reporterId  String
+  reportedId  String
+  reason      String
+  description String?
+  status      ReportStatus @default(PENDING)
+  createdAt   DateTime     @default(now())
+
+  reporter    User @relation("ReportsGiven", fields: [reporterId], references: [id])
+  reported    User @relation("ReportsReceived", fields: [reportedId], references: [id])
+
+  @@map("reports")
+}
+
+model Block {
+  id        String   @id @default(uuid())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  blocker   User @relation("BlocksGiven", fields: [blockerId], references: [id])
+  blocked   User @relation("BlocksReceived", fields: [blockedId], references: [id])
+
+  @@unique([blockerId, blockedId])
+  @@map("blocks")
+}
+
+model Referral {
+  id          String   @id @default(uuid())
+  referrerId  String
+  refereeId   String?
+  code        String   @unique
+  status      String   @default("PENDING")
+  createdAt   DateTime @default(now())
+
+  referrer    User     @relation("ReferralsGiven", fields: [referrerId], references: [id])
+  referee     User?    @relation("ReferralsReceived", fields: [refereeId], references: [id])
+
+  @@map("referrals")
+}
+
+model Promotion {
+  id            String   @id @default(uuid())
+  code          String   @unique
+  description   String
+  discountType  String   // "PERCENTAGE" | "FIXED"
+  discountValue Int      // percentage (50) or cents (1500)
+  validFrom     DateTime
+  validTo       DateTime
+  maxUses       Int?
+  currentUses   Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  @@map("promotions")
+}
+
+model JobPost {
+  id                 String        @id @default(uuid())
+  clientId           String
+  category           String
+  state              String
+  urgency            String        @default("medium")
+  description        String
+  summary            String
+  status             JobPostStatus @default(OPEN)
+  acceptedByLawyerId String?
+  consultationId     String?       @unique
+  expiresAt          DateTime?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  client             User           @relation("ClientJobPosts", fields: [clientId], references: [id])
+  acceptedByLawyer   LawyerProfile? @relation("AcceptedJobPosts", fields: [acceptedByLawyerId], references: [id])
+  consultation       Consultation?  @relation("JobPostConsultation", fields: [consultationId], references: [id])
+  views              JobPostView[]  @relation("JobPostViews")
+
+  @@index([state, status])
+  @@map("job_posts")
+}
+
+model JobPostView {
+  id         String   @id @default(uuid())
+  jobPostId  String
+  lawyerId   String
+  lawyerName String
+  viewedAt   DateTime @default(now())
+
+  jobPost JobPost       @relation("JobPostViews", fields: [jobPostId], references: [id], onDelete: Cascade)
+  lawyer  LawyerProfile @relation("LawyerJobPostViews", fields: [lawyerId], references: [id], onDelete: Cascade)
+
+  @@unique([jobPostId, lawyerId])
+  @@map("job_post_views")
+}

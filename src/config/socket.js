@@ -1,0 +1,209 @@
+import { Server } from "socket.io";
+import { verifyToken } from "@clerk/express";
+import prisma from "../lib/prisma.js";
+import { notifyNewMessage } from "../services/notification.service.js";
+import { moderateMessage } from "../services/moderation.service.js";
+
+let io;
+
+export function initSocket(httpServer) {
+  io = new Server(httpServer, {
+    cors: {
+      origin: process.env.NODE_ENV === "production"
+        ? process.env.CLIENT_URL
+        : "*",
+      credentials: true,
+    },
+    pingTimeout: 60000,
+    pingInterval: 25000,
+  });
+
+  // Auth middleware — verify Clerk JWT on connection
+  io.use(async (socket, next) => {
+    try {
+      const token = socket.handshake.auth?.token;
+      if (!token) return next(new Error("Authentication required"));
+
+      const decoded = await verifyToken(token, {
+        secretKey: process.env.CLERK_SECRET_KEY,
+      });
+
+      if (!decoded?.sub) return next(new Error("Invalid token"));
+
+      const user = await prisma.user.findUnique({
+        where: { clerkId: decoded.sub },
+        select: { id: true, role: true, firstName: true, lastName: true },
+      });
+
+      if (!user) return next(new Error("User not found"));
+
+      socket.user = user;
+      next();
+    } catch (err) {
+      next(new Error("Authentication failed"));
+    }
+  });
+
+  io.on("connection", (socket) => {
+    const userId = socket.user.id;
+
+    // Join personal room for direct notifications
+    socket.join(`user:${userId}`);
+
+    // Update lastActiveAt
+    prisma.user.update({
+      where: { id: userId },
+      data: { lastActiveAt: new Date() },
+    }).catch(() => {});
+
+    // ─── Join a consultation room ───
+    socket.on("join-consultation", async ({ consultationId }) => {
+      try {
+        const consultation = await prisma.consultation.findUnique({
+          where: { id: consultationId },
+          include: { lawyer: { select: { userId: true } } },
+        });
+
+        if (!consultation) return;
+
+        // Verify participant
+        const isClient = consultation.clientId === userId;
+        const isLawyer = consultation.lawyer.userId === userId;
+        if (!isClient && !isLawyer) return;
+
+        socket.join(`consultation:${consultationId}`);
+        socket.emit("joined-consultation", { consultationId });
+      } catch (err) {
+        socket.emit("error", { message: "Failed to join consultation" });
+      }
+    });
+
+    // ─── Send a message ───
+    socket.on("send-message", async ({ consultationId, content, messageType = "TEXT" }) => {
+      try {
+        const consultation = await prisma.consultation.findUnique({
+          where: { id: consultationId },
+        });
+
+        if (!consultation) {
+          return socket.emit("error", { message: "Consultation not found" });
+        }
+
+        // Block messages on ended consultations
+        if (["COMPLETED", "CANCELLED"].includes(consultation.status)) {
+          return socket.emit("error", { message: "Consultation has ended" });
+        }
+
+        // Block messages after trial expired (if no payment)
+        if (
+          consultation.status === "TRIAL" &&
+          consultation.trialEndAt &&
+          new Date() > consultation.trialEndAt
+        ) {
+          const payment = await prisma.payment.findUnique({
+            where: { consultationId },
+          });
+          if (!payment || payment.status !== "SUCCEEDED") {
+            return socket.emit("error", { message: "Trial has expired. Please pay to continue." });
+          }
+        }
+
+        // ── Content moderation (text messages only) ──
+        if (messageType === "TEXT" && content) {
+          const modResult = await moderateMessage(content, {
+            senderRole: socket.user.role,
+            senderId: userId,
+          });
+
+          if (!modResult.allowed) {
+            return socket.emit("message-blocked", {
+              reason: modResult.reason || "Your message was blocked by our content policy.",
+              category: modResult.category,
+              consultationId,
+            });
+          }
+        }
+
+        const message = await prisma.message.create({
+          data: {
+            consultationId,
+            senderId: userId,
+            content,
+            messageType,
+          },
+          include: {
+            sender: { select: { id: true, firstName: true, lastName: true, avatar: true } },
+          },
+        });
+
+        // Broadcast to the room
+        io.to(`consultation:${consultationId}`).emit("new-message", message);
+
+        // Push notification to the other participant
+        const otherUserId = consultation.clientId === userId
+          ? (await prisma.lawyerProfile.findUnique({ where: { id: consultation.lawyerId }, select: { userId: true } }))?.userId
+          : consultation.clientId;
+        if (otherUserId) {
+          const senderName = `${socket.user.firstName} ${socket.user.lastName}`.trim();
+          notifyNewMessage(otherUserId, senderName, messageType, content, consultationId);
+        }
+
+        // Update consultation updatedAt
+        await prisma.consultation.update({
+          where: { id: consultationId },
+          data: { updatedAt: new Date() },
+        });
+      } catch (err) {
+        socket.emit("error", { message: "Failed to send message" });
+      }
+    });
+
+    // ─── Typing indicators ───
+    socket.on("typing-start", ({ consultationId }) => {
+      socket.to(`consultation:${consultationId}`).emit("typing-start", {
+        userId,
+        name: `${socket.user.firstName}`,
+      });
+    });
+
+    socket.on("typing-stop", ({ consultationId }) => {
+      socket.to(`consultation:${consultationId}`).emit("typing-stop", { userId });
+    });
+
+    // ─── Read receipts ───
+    socket.on("read-receipt", async ({ consultationId }) => {
+      try {
+        await prisma.message.updateMany({
+          where: {
+            consultationId,
+            senderId: { not: userId },
+            isRead: false,
+          },
+          data: { isRead: true, readAt: new Date() },
+        });
+
+        socket.to(`consultation:${consultationId}`).emit("messages-read", {
+          consultationId,
+          readBy: userId,
+        });
+      } catch (err) {
+        // Silent fail for read receipts
+      }
+    });
+
+    // ─── Disconnect ───
+    socket.on("disconnect", () => {
+      prisma.user.update({
+        where: { id: userId },
+        data: { lastActiveAt: new Date() },
+      }).catch(() => {});
+    });
+  });
+
+  return io;
+}
+
+export function getIO() {
+  if (!io) throw new Error("Socket.io not initialized");
+  return io;
+}
