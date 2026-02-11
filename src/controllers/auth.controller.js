@@ -1,6 +1,7 @@
 import asyncHandler from "express-async-handler";
 import { getAuth, clerkClient } from "@clerk/express";
 import prisma from "../lib/prisma.js";
+import { getClientIp, getLocationFromIp } from "../services/geolocation.service.js";
 
 // @desc    Sync Clerk user to database (called after sign-up or first login)
 // @route   POST /api/auth/sync
@@ -31,6 +32,10 @@ export const syncUser = asyncHandler(async (req, res) => {
   // Fetch user details from Clerk
   const clerkUser = await clerkClient.users.getUser(userId);
 
+  // Resolve location from IP
+  const ip = getClientIp(req);
+  const { state, city } = getLocationFromIp(ip);
+
   user = await prisma.user.create({
     data: {
       clerkId: userId,
@@ -40,6 +45,9 @@ export const syncUser = asyncHandler(async (req, res) => {
       phone: phone || clerkUser.phoneNumbers?.[0]?.phoneNumber || null,
       avatar: clerkUser.imageUrl,
       isVerified: clerkUser.emailAddresses[0]?.verification?.status === "verified",
+      registrationState: state,
+      registrationCity: city,
+      registrationIp: ip,
     },
   });
 

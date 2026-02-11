@@ -15,6 +15,18 @@ import {
   getAdminDisputeDetail,
   resolveDispute,
   addAdminNote,
+  getRecentSignups,
+  sendBroadcastNotification,
+  getBroadcastHistory,
+  getAnalytics,
+  getCalendarData,
+  getTodos,
+  createTodo,
+  updateTodo,
+  deleteTodo,
+  getGeographicData,
+  getTopLawyers,
+  getVisitorStats,
 } from "../controllers/admin.controller.js";
 
 const router = Router();
@@ -38,5 +50,17 @@ router.get("/disputes", getAdminDisputes);
 router.get("/disputes/:id", getAdminDisputeDetail);
 router.put("/disputes/:id/resolve", resolveDispute);
 router.post("/disputes/:id/note", addAdminNote);
+router.get("/signups", getRecentSignups);
+router.post("/notifications/broadcast", sendBroadcastNotification);
+router.get("/notifications/broadcast", getBroadcastHistory);
+router.get("/analytics", getAnalytics);
+router.get("/calendar", getCalendarData);
+router.get("/todos", getTodos);
+router.post("/todos", createTodo);
+router.put("/todos/:id", updateTodo);
+router.delete("/todos/:id", deleteTodo);
+router.get("/geography", getGeographicData);
+router.get("/top-lawyers", getTopLawyers);
+router.get("/visitors", getVisitorStats);
 
 export default router;

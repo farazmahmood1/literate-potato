@@ -1,6 +1,7 @@
 import asyncHandler from "express-async-handler";
 import { clerkClient } from "@clerk/express";
 import prisma from "../lib/prisma.js";
+import { getClientIp, getLocationFromIp } from "../services/geolocation.service.js";
 
 // @desc    Register a new user from the portfolio website (no auth required)
 // @route   POST /api/web-register
@@ -79,6 +80,10 @@ export const webRegister = asyncHandler(async (req, res) => {
     throw error;
   }
 
+  // Resolve location from IP
+  const ip = getClientIp(req);
+  const { state: regState, city: regCity } = getLocationFromIp(ip);
+
   // Create user in our database
   const user = await prisma.user.create({
     data: {
@@ -90,6 +95,9 @@ export const webRegister = asyncHandler(async (req, res) => {
       avatar: clerkUser.imageUrl,
       role,
       isVerified: false,
+      registrationState: role === "LAWYER" ? licenseState : regState,
+      registrationCity: regCity,
+      registrationIp: ip,
     },
   });
 

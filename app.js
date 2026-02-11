@@ -27,6 +27,7 @@ import callRoutes from "./src/routes/call.routes.js";
 import jobPostRoutes from "./src/routes/job-post.routes.js";
 import disputeRoutes from "./src/routes/dispute.routes.js";
 import webRegisterRoutes from "./src/routes/web-register.routes.js";
+import trackingRoutes from "./src/routes/tracking.routes.js";
 import { errorHandler, notFound } from "./src/middlewares/error.middleware.js";
 
 const app = express();
@@ -49,6 +50,9 @@ app.get("/", (req, res) => {
 
 // Admin routes registered BEFORE Clerk middleware (uses its own JWT auth)
 app.use("/api/admin", adminRoutes);
+
+// Tracking routes — public, no auth
+app.use("/api/tracking", trackingRoutes);
 
 app.use(clerk);
 

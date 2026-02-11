@@ -97,6 +97,9 @@ model User {
   expoPushToken   String?
   lastActiveAt    DateTime?
   notificationPreferences Json?
+  registrationState  String?
+  registrationCity   String?
+  registrationIp     String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -484,4 +487,47 @@ model Notification {
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, read])
   @@map("notifications")
+}
+
+model AdminBroadcast {
+  id        String   @id @default(uuid())
+  title     String
+  body      String
+  target    String   // ALL, CLIENTS, LAWYERS
+  sentBy    String
+  sentCount Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([createdAt(sort: Desc)])
+  @@map("admin_broadcasts")
+}
+
+model AdminTodo {
+  id          String    @id @default(uuid())
+  title       String
+  description String?
+  date        DateTime?
+  completed   Boolean   @default(false)
+  priority    String    @default("medium")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([date])
+  @@index([completed])
+  @@map("admin_todos")
+}
+
+model SiteVisit {
+  id          String   @id @default(uuid())
+  fingerprint String
+  ipAddress   String
+  userAgent   String   @db.Text
+  deviceType  String
+  path        String
+  referrer    String?
+  createdAt   DateTime @default(now())
+
+  @@index([fingerprint, createdAt])
+  @@index([createdAt])
+  @@map("site_visits")
 }
