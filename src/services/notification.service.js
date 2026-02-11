@@ -1,5 +1,6 @@
 import { Expo } from "expo-server-sdk";
 import prisma from "../lib/prisma.js";
+import { getIO } from "../config/socket.js";
 import {
   emailConsultationAccepted,
   emailConsultationCompleted,
@@ -22,6 +23,44 @@ const expo = new Expo();
 
 // ─── Active trial timers (keyed by consultationId) ───
 const trialTimers = new Map();
+
+// ─────────────────────────────────────────────────────
+// In-app notification helper
+// ─────────────────────────────────────────────────────
+
+/**
+ * Create a persistent in-app notification and emit via socket.
+ * Always created regardless of user push preferences.
+ */
+export async function createInAppNotification(userId, type, title, body, data = {}) {
+  try {
+    const notification = await prisma.notification.create({
+      data: { userId, type, title, body, data },
+    });
+
+    // Emit real-time socket events
+    try {
+      const io = getIO();
+      io.to(`user:${userId}`).emit("new-notification", notification);
+
+      const unreadCount = await prisma.notification.count({
+        where: { userId, read: false },
+      });
+      io.to(`user:${userId}`).emit("unread-notification-count", { count: unreadCount });
+    } catch {
+      // Socket not initialized yet (e.g. during startup) — silent fail
+    }
+
+    return notification;
+  } catch (err) {
+    console.error("Failed to create in-app notification:", err.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────
+// Push notification base functions
+// ─────────────────────────────────────────────────────
 
 /**
  * Send a push notification to a specific Expo push token.
@@ -124,6 +163,12 @@ export function notifyConsultationAccepted(clientId, lawyerName, consultationId,
 
   // Email
   emailConsultationAccepted(clientId, lawyerName, consultationId, category);
+
+  // In-app
+  createInAppNotification(clientId, "consultation_accepted", "Consultation Accepted",
+    `Attorney ${lawyerName} has accepted your consultation request.`,
+    { consultationId, trialEndAt }
+  );
 }
 
 /**
@@ -133,6 +178,12 @@ export function notifyConsultationDeclined(clientId, consultationId) {
   sendToUserIfAllowed(clientId, "consultationUpdates", "Consultation Update",
     "Your consultation request was declined. Browse other lawyers.",
     { type: "consultation_declined", consultationId }
+  );
+
+  // In-app
+  createInAppNotification(clientId, "consultation_declined", "Consultation Update",
+    "Your consultation request was declined. Browse other lawyers.",
+    { consultationId }
   );
 }
 
@@ -146,6 +197,12 @@ export function notifyConsultationCompleted(clientId, lawyerName, consultationId
   );
 
   emailConsultationCompleted(clientId, lawyerName, consultationId);
+
+  // In-app
+  createInAppNotification(clientId, "consultation_completed", "Consultation Completed",
+    `Your consultation with ${lawyerName} is complete. Leave a review!`,
+    { consultationId }
+  );
 }
 
 /**
@@ -158,6 +215,12 @@ export function notifyConsultationCancelled(clientId, lawyerName, consultationId
   );
 
   emailConsultationCancelled(clientId, lawyerName);
+
+  // In-app
+  createInAppNotification(clientId, "consultation_cancelled", "Consultation Cancelled",
+    `Attorney ${lawyerName} has cancelled the consultation.`,
+    { consultationId }
+  );
 }
 
 // ─────────────────────────────────────────────────────
@@ -182,6 +245,12 @@ export function scheduleTrialNotifications(clientId, lawyerName, consultationId,
         "Your trial ends in 1 minute. Upgrade to continue.",
         { type: "trial_expiring", consultationId }
       );
+
+      // In-app
+      createInAppNotification(clientId, "trial_expiring", "Trial Ending Soon",
+        "Your trial ends in 1 minute. Upgrade to continue.",
+        { consultationId }
+      );
     }, warningMs);
     timers.push(warningTimer);
   }
@@ -197,6 +266,12 @@ export function scheduleTrialNotifications(clientId, lawyerName, consultationId,
       sendToUserIfAllowed(clientId, "consultationUpdates", "Trial Ended",
         `Your trial with ${lawyerName} has ended. Upgrade to full consultation.`,
         { type: "trial_expired", consultationId }
+      );
+
+      // In-app
+      createInAppNotification(clientId, "trial_expired", "Trial Ended",
+        `Your trial with ${lawyerName} has ended. Upgrade to full consultation.`,
+        { consultationId }
       );
     }
 
@@ -243,6 +318,13 @@ export function scheduleConsultationReminder(clientId, lawyerName, consultationI
       `Your consultation with ${lawyerName} starts in 15 minutes.`,
       { type: "consultation_reminder", consultationId }
     );
+
+    // In-app
+    createInAppNotification(clientId, "consultation_reminder", "Upcoming Consultation",
+      `Your consultation with ${lawyerName} starts in 15 minutes.`,
+      { consultationId }
+    );
+
     reminderTimers.delete(consultationId);
   }, delay);
 
@@ -263,6 +345,7 @@ export function cancelConsultationReminder(consultationId) {
 
 /**
  * Send a push notification for a new message.
+ * NOTE: No in-app notification created — messages have their own chat system.
  * @param {string} recipientUserId - The user who should receive the notification
  * @param {string} senderName - Display name of the sender
  * @param {string} messageType - "TEXT", "DOCUMENT", "IMAGE"
@@ -310,6 +393,12 @@ export function notifyIncomingCall(receiverUserId, callerName, consultationId, c
     `${callerName} is calling you.`,
     { type: "incoming_call", consultationId, callId }
   );
+
+  // In-app
+  createInAppNotification(receiverUserId, "incoming_call", "Incoming Call",
+    `${callerName} is calling you.`,
+    { consultationId, callId }
+  );
 }
 
 /**
@@ -320,6 +409,12 @@ export function notifyIncomingVideoCall(receiverUserId, callerName, consultation
     `${callerName} is video calling you.`,
     { type: "incoming_video_call", consultationId, callId }
   );
+
+  // In-app
+  createInAppNotification(receiverUserId, "incoming_video_call", "Incoming Video Call",
+    `${callerName} is video calling you.`,
+    { consultationId, callId }
+  );
 }
 
 /**
@@ -329,6 +424,12 @@ export function notifyMissedCall(userId, callerName, consultationId, callId) {
   sendToUserIfAllowed(userId, "consultationUpdates", "Missed Call",
     `You missed a call from ${callerName}.`,
     { type: "missed_call", consultationId, callId }
+  );
+
+  // In-app
+  createInAppNotification(userId, "missed_call", "Missed Call",
+    `You missed a call from ${callerName}.`,
+    { consultationId, callId }
   );
 }
 
@@ -348,6 +449,12 @@ export function notifyPaymentReceived(lawyerUserId, clientName, amountCents, con
   );
 
   emailPaymentReceived(lawyerUserId, clientName, amountCents, consultationId);
+
+  // In-app
+  createInAppNotification(lawyerUserId, "payment_received", "Payment Received",
+    `You received $${dollars} from ${clientName}.`,
+    { consultationId, amount: amountCents }
+  );
 }
 
 /**
@@ -361,6 +468,12 @@ export function notifyPaymentSucceeded(clientUserId, lawyerName, amountCents, co
   );
 
   emailPaymentConfirmation(clientUserId, lawyerName, amountCents, consultationId);
+
+  // In-app
+  createInAppNotification(clientUserId, "payment_succeeded", "Payment Confirmed",
+    `Your payment of $${dollars} to ${lawyerName} was successful.`,
+    { consultationId, amount: amountCents }
+  );
 }
 
 /**
@@ -374,6 +487,12 @@ export function notifyPaymentFailed(clientUserId, amountCents, consultationId) {
   );
 
   emailPaymentFailed(clientUserId, amountCents);
+
+  // In-app
+  createInAppNotification(clientUserId, "payment_failed", "Payment Failed",
+    `Your payment of $${dollars} failed. Please update your payment method.`,
+    { consultationId, amount: amountCents }
+  );
 }
 
 /**
@@ -385,6 +504,12 @@ export function notifyPayoutSent(lawyerUserId, amountCents) {
     `A payout of $${dollars} has been sent to your bank account.`,
     { type: "payout_sent", amount: amountCents }
   );
+
+  // In-app
+  createInAppNotification(lawyerUserId, "payout_sent", "Payout Sent",
+    `A payout of $${dollars} has been sent to your bank account.`,
+    { amount: amountCents }
+  );
 }
 
 /**
@@ -395,6 +520,12 @@ export function notifyPayoutFailed(lawyerUserId, amountCents) {
   sendToUserIfAllowed(lawyerUserId, "paymentAlerts", "Payout Failed",
     `Your payout of $${dollars} failed. Check your Stripe settings.`,
     { type: "payout_failed", amount: amountCents }
+  );
+
+  // In-app
+  createInAppNotification(lawyerUserId, "payout_failed", "Payout Failed",
+    `Your payout of $${dollars} failed. Check your Stripe settings.`,
+    { amount: amountCents }
   );
 }
 
@@ -413,6 +544,12 @@ export function notifyNewReview(lawyerUserId, reviewerName, rating, consultation
   );
 
   emailNewReview(lawyerUserId, reviewerName, rating, comment);
+
+  // In-app
+  createInAppNotification(lawyerUserId, "new_review", "New Review",
+    `${reviewerName} left you a ${stars} review!`,
+    { consultationId, rating }
+  );
 }
 
 /**
@@ -422,6 +559,12 @@ export function notifyRatingMilestone(lawyerUserId, fiveStarCount) {
   sendToUserIfAllowed(lawyerUserId, "consultationUpdates", "Milestone",
     `Congratulations! You've reached ${fiveStarCount} five-star reviews.`,
     { type: "rating_milestone", fiveStarCount }
+  );
+
+  // In-app
+  createInAppNotification(lawyerUserId, "rating_milestone", "Milestone",
+    `Congratulations! You've reached ${fiveStarCount} five-star reviews.`,
+    { fiveStarCount }
   );
 }
 
@@ -439,6 +582,12 @@ export function notifyVerificationApproved(lawyerUserId, lawyerName) {
   );
 
   emailVerificationApproved(lawyerUserId, lawyerName || "Attorney");
+
+  // In-app
+  createInAppNotification(lawyerUserId, "verification_approved", "Verification Approved",
+    "Your profile has been verified. You're now visible to clients.",
+    {}
+  );
 }
 
 /**
@@ -451,6 +600,12 @@ export function notifyVerificationRejected(lawyerUserId, lawyerName) {
   );
 
   emailVerificationRejected(lawyerUserId, lawyerName || "Attorney");
+
+  // In-app
+  createInAppNotification(lawyerUserId, "verification_rejected", "Verification Update",
+    "Your verification was not approved. Please resubmit documents.",
+    {}
+  );
 }
 
 /**
@@ -461,6 +616,12 @@ export function notifyNewSignIn(userId) {
     "Your account was signed in from a new device.",
     { type: "new_sign_in" }
   );
+
+  // In-app
+  createInAppNotification(userId, "new_sign_in", "New Sign-In",
+    "Your account was signed in from a new device.",
+    {}
+  );
 }
 
 /**
@@ -470,6 +631,12 @@ export function notifyPasswordChanged(userId) {
   sendToUserIfAllowed(userId, "securityAlerts", "Password Changed",
     "Your password was successfully updated.",
     { type: "password_changed" }
+  );
+
+  // In-app
+  createInAppNotification(userId, "password_changed", "Password Changed",
+    "Your password was successfully updated.",
+    {}
   );
 }
 
@@ -487,6 +654,12 @@ export function notifyNewJobPost(lawyerUserId, clientName, category, state, jobP
   );
 
   emailNewJobPost(lawyerUserId, clientName, category, state, description, jobPostId);
+
+  // In-app
+  createInAppNotification(lawyerUserId, "new_job_post", "New Job Post",
+    `${clientName} needs help with ${category} in ${state}. First 3 min free.`,
+    { jobPostId, category, state }
+  );
 }
 
 /**
@@ -499,6 +672,12 @@ export function notifyJobPostAccepted(clientUserId, lawyerName, jobPostId, consu
   );
 
   emailJobPostAccepted(clientUserId, lawyerName, category, consultationId);
+
+  // In-app
+  createInAppNotification(clientUserId, "job_post_accepted", "Job Post Accepted",
+    `Attorney ${lawyerName} has accepted your job post. A 3-minute free trial has started.`,
+    { jobPostId, consultationId }
+  );
 }
 
 // ─────────────────────────────────────────────────────
@@ -530,6 +709,12 @@ export async function sendInactivityReminders() {
         `You have ${pending} pending consultation request${pending !== 1 ? "s" : ""}. Check them now.`,
         { type: "inactivity_reminder", pendingCount: pending }
       );
+
+      // In-app
+      createInAppNotification(lawyer.user.id, "inactivity_reminder", "We Miss You",
+        `You have ${pending} pending consultation request${pending !== 1 ? "s" : ""}. Check them now.`,
+        { pendingCount: pending }
+      );
     }
   }
 }
@@ -548,6 +733,12 @@ export function notifyDisputeOpened(lawyerUserId, clientName, category, disputeI
   );
 
   emailDisputeOpened(lawyerUserId, clientName, category, disputeId);
+
+  // In-app
+  createInAppNotification(lawyerUserId, "dispute_opened", "Dispute Opened",
+    `${clientName} has filed a dispute regarding ${category}.`,
+    { disputeId }
+  );
 }
 
 /**
@@ -557,6 +748,12 @@ export function notifyDisputeResponse(clientUserId, lawyerName, disputeId) {
   sendToUserIfAllowed(clientUserId, "consultationUpdates", "Dispute Response",
     `Attorney ${lawyerName} has responded to your dispute.`,
     { type: "dispute_response", disputeId }
+  );
+
+  // In-app
+  createInAppNotification(clientUserId, "dispute_response", "Dispute Response",
+    `Attorney ${lawyerName} has responded to your dispute.`,
+    { disputeId }
   );
 }
 
@@ -570,6 +767,12 @@ export function notifyDisputeEscalated(userId, disputeId) {
   );
 
   emailDisputeEscalated(userId, disputeId);
+
+  // In-app
+  createInAppNotification(userId, "dispute_escalated", "Dispute Escalated",
+    "The dispute has been escalated to admin review.",
+    { disputeId }
+  );
 }
 
 /**
@@ -584,6 +787,12 @@ export function notifyDisputeResolved(userId, resolutionType, refundAmount, disp
   );
 
   emailDisputeResolved(userId, resolutionType, refundAmount, disputeId);
+
+  // In-app
+  createInAppNotification(userId, "dispute_resolved", "Dispute Resolved",
+    `Your dispute has been resolved: ${typeLabel}${refundStr}.`,
+    { disputeId, resolutionType, refundAmount }
+  );
 }
 
 /**
@@ -594,6 +803,12 @@ export function notifyDisputeEvidenceAdded(userId, submitterName, disputeId) {
     `${submitterName} added evidence to the dispute.`,
     { type: "dispute_evidence", disputeId }
   );
+
+  // In-app
+  createInAppNotification(userId, "dispute_evidence", "New Evidence",
+    `${submitterName} added evidence to the dispute.`,
+    { disputeId }
+  );
 }
 
 /**
@@ -603,6 +818,12 @@ export function notifyDisputeProposal(userId, proposerName, disputeId) {
   sendToUserIfAllowed(userId, "consultationUpdates", "Resolution Proposed",
     `${proposerName} has proposed a resolution for the dispute.`,
     { type: "dispute_proposal", disputeId }
+  );
+
+  // In-app
+  createInAppNotification(userId, "dispute_proposal", "Resolution Proposed",
+    `${proposerName} has proposed a resolution for the dispute.`,
+    { disputeId }
   );
 }
 
@@ -616,5 +837,11 @@ export function notifyDisputeDeadline(userId, disputeId, deadlineType) {
   sendToUserIfAllowed(userId, "consultationUpdates", "Dispute Deadline",
     msg,
     { type: "dispute_deadline", disputeId, deadlineType }
+  );
+
+  // In-app
+  createInAppNotification(userId, "dispute_deadline", "Dispute Deadline",
+    msg,
+    { disputeId, deadlineType }
   );
 }
