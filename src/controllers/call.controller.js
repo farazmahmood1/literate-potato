@@ -99,14 +99,16 @@ export const initiateCall = asyncHandler(async (req, res) => {
   const initiatorToken = generateRtcToken(call.channelName, initiatorUid, "publisher");
 
   // Emit incoming-call to the other party via their personal room
-  const io = getIO();
-  io.to(`user:${otherPartyUserId}`).emit("incoming-call", {
-    callId: call.id,
-    consultationId,
-    callerName: initiatorName,
-    callType: type,
-    isVideo: type === "video",
-  });
+  try {
+    const io = getIO();
+    io.to(`user:${otherPartyUserId}`).emit("incoming-call", {
+      callId: call.id,
+      consultationId,
+      callerName: initiatorName,
+      callType: type,
+      isVideo: type === "video",
+    });
+  } catch {}
 
   // Push notification for incoming call
   if (type === "video") {
@@ -125,8 +127,11 @@ export const initiateCall = asyncHandler(async (req, res) => {
           data: { status: "MISSED" },
         });
 
-        io.to(`user:${req.user.id}`).emit("call-missed", { callId: call.id });
-        io.to(`user:${otherPartyUserId}`).emit("call-missed", { callId: call.id });
+        try {
+          const io = getIO();
+          io.to(`user:${req.user.id}`).emit("call-missed", { callId: call.id });
+          io.to(`user:${otherPartyUserId}`).emit("call-missed", { callId: call.id });
+        } catch {}
 
         notifyMissedCall(otherPartyUserId, initiatorName, consultationId, call.id);
       }
@@ -178,15 +183,17 @@ export const acceptCall = asyncHandler(async (req, res) => {
   const receiverToken = generateRtcToken(call.channelName, call.receiverUid, "publisher");
 
   // Notify both parties
-  const io = getIO();
-  io.to(`user:${call.initiatorId}`).emit("call-accepted", {
-    callId,
-    acceptedAt: startedAt.toISOString(),
-  });
-  io.to(`user:${call.receiverId}`).emit("call-accepted", {
-    callId,
-    acceptedAt: startedAt.toISOString(),
-  });
+  try {
+    const io = getIO();
+    io.to(`user:${call.initiatorId}`).emit("call-accepted", {
+      callId,
+      acceptedAt: startedAt.toISOString(),
+    });
+    io.to(`user:${call.receiverId}`).emit("call-accepted", {
+      callId,
+      acceptedAt: startedAt.toISOString(),
+    });
+  } catch {}
 
   res.json({
     success: true,
@@ -227,8 +234,10 @@ export const declineCall = asyncHandler(async (req, res) => {
   });
 
   // Notify the initiator
-  const io = getIO();
-  io.to(`user:${call.initiatorId}`).emit("call-declined", { callId });
+  try {
+    const io = getIO();
+    io.to(`user:${call.initiatorId}`).emit("call-declined", { callId });
+  } catch {}
 
   res.json({
     success: true,
@@ -272,15 +281,17 @@ export const endCall = asyncHandler(async (req, res) => {
   });
 
   // Notify both parties
-  const io = getIO();
-  const endPayload = {
-    callId,
-    duration,
-    endedAt: endedAt.toISOString(),
-  };
+  try {
+    const io = getIO();
+    const endPayload = {
+      callId,
+      duration,
+      endedAt: endedAt.toISOString(),
+    };
 
-  io.to(`user:${call.initiatorId}`).emit("call-ended", endPayload);
-  io.to(`user:${call.receiverId}`).emit("call-ended", endPayload);
+    io.to(`user:${call.initiatorId}`).emit("call-ended", endPayload);
+    io.to(`user:${call.receiverId}`).emit("call-ended", endPayload);
+  } catch {}
 
   res.json({
     success: true,

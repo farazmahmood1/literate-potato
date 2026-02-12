@@ -40,6 +40,7 @@ export const updateOnlineStatus = asyncHandler(async (req, res) => {
     const io = getIO();
     io.emit("lawyer-status-change", {
       lawyerId: profile.id,
+      userId: req.user.id,
       status,
     });
   } catch {}

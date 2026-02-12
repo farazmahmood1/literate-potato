@@ -1,20 +1,55 @@
 import asyncHandler from "express-async-handler";
 import prisma from "../lib/prisma.js";
+import {
+  emailReportWarning,
+  emailAccountSuspended,
+} from "../services/email.service.js";
+import { createInAppNotification } from "../services/notification.service.js";
 
 // @desc    Report a user
 // @route   POST /api/reports
 export const createReport = asyncHandler(async (req, res) => {
-  const { reportedUserId, consultationId, reason, description } = req.body;
+  const { reportedUserId, reason, description } = req.body;
 
   const report = await prisma.report.create({
     data: {
       reporterId: req.user.id,
-      reportedUserId,
-      consultationId,
+      reportedId: reportedUserId,
       reason,
       description,
     },
   });
+
+  // Count total reports against the reported user
+  const reportCount = await prisma.report.count({
+    where: { reportedId: reportedUserId },
+  });
+
+  // At 5 reports: send warning email + in-app notification
+  if (reportCount === 5) {
+    emailReportWarning(reportedUserId, reportCount);
+    createInAppNotification({
+      userId: reportedUserId,
+      type: "SECURITY",
+      title: "Account Warning",
+      body: "Your account has received multiple reports. Please review our community guidelines.",
+    }).catch(() => {});
+  }
+
+  // At 10 reports: suspend account + send suspension email
+  if (reportCount >= 10) {
+    await prisma.user.update({
+      where: { id: reportedUserId },
+      data: { suspended: true },
+    });
+    emailAccountSuspended(reportedUserId, reportCount);
+    createInAppNotification({
+      userId: reportedUserId,
+      type: "SECURITY",
+      title: "Account Suspended",
+      body: "Your account has been suspended due to multiple reports from other users.",
+    }).catch(() => {});
+  }
 
   res.status(201).json({ success: true, data: report });
 });
@@ -87,7 +122,7 @@ export const getReports = asyncHandler(async (req, res) => {
       where,
       include: {
         reporter: { select: { firstName: true, lastName: true } },
-        reportedUser: { select: { firstName: true, lastName: true } },
+        reported: { select: { firstName: true, lastName: true } },
       },
       orderBy: { createdAt: "desc" },
       skip,
@@ -110,12 +145,7 @@ export const updateReport = asyncHandler(async (req, res) => {
 
   const report = await prisma.report.update({
     where: { id: req.params.id },
-    data: {
-      status,
-      resolution,
-      resolvedAt: status === "RESOLVED" ? new Date() : undefined,
-      resolvedById: status === "RESOLVED" ? req.user.id : undefined,
-    },
+    data: { status },
   });
 
   res.json({ success: true, data: report });

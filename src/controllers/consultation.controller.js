@@ -243,7 +243,11 @@ export const getConsultations = asyncHandler(async (req, res) => {
       include: {
         client: { select: { firstName: true, lastName: true, avatar: true } },
         lawyer: {
-          include: { user: { select: { firstName: true, lastName: true, avatar: true } } },
+          select: {
+            id: true,
+            onlineStatus: true,
+            user: { select: { firstName: true, lastName: true, avatar: true } },
+          },
         },
         messages: {
           orderBy: { createdAt: "desc" },

@@ -145,7 +145,7 @@ export const getUsers = asyncHandler(async (req, res) => {
 // @desc    Get all lawyers (paginated, with profile data)
 // @route   GET /api/admin/lawyers
 export const getLawyers = asyncHandler(async (req, res) => {
-  const { search, verification, state, specializations, page = 1, limit = 20 } = req.query;
+  const { search, verification, state, specializations, sort, minRating, page = 1, limit = 20 } = req.query;
   const where = {};
 
   if (search) {
@@ -162,6 +162,14 @@ export const getLawyers = asyncHandler(async (req, res) => {
     const specArray = specializations.split(",").map((s) => s.trim()).filter(Boolean);
     if (specArray.length > 0) where.specializations = { hasSome: specArray };
   }
+  if (minRating) where.rating = { gte: Number(minRating) };
+
+  // Dynamic sorting
+  let orderBy = { createdAt: "desc" };
+  if (sort === "rating_desc") orderBy = { rating: "desc" };
+  else if (sort === "rating_asc") orderBy = { rating: "asc" };
+  else if (sort === "consultations") orderBy = { consultations: { _count: "desc" } };
+  else if (sort === "newest") orderBy = { createdAt: "desc" };
 
   const skip = (Number(page) - 1) * Number(limit);
   const [lawyers, total] = await Promise.all([
@@ -171,7 +179,7 @@ export const getLawyers = asyncHandler(async (req, res) => {
         user: { select: { firstName: true, lastName: true, email: true, phone: true, avatar: true, createdAt: true } },
         _count: { select: { consultations: true, reviews: true } },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy,
       skip,
       take: Number(limit),
     }),

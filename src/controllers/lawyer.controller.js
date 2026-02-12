@@ -1,5 +1,6 @@
 import asyncHandler from "express-async-handler";
 import prisma from "../lib/prisma.js";
+import { notifyProfileViewed } from "../services/notification.service.js";
 
 // @desc    Create lawyer profile
 // @route   POST /api/lawyers/profile
@@ -61,6 +62,8 @@ export const createLawyerProfile = asyncHandler(async (req, res) => {
 //   state          - filter by licenseState
 //   available      - "true"/"false" filter by isAvailable
 //   onlineStatus   - filter by onlineStatus ("online", "offline", "busy")
+//   minRating      - minimum rating (e.g. "4" for 4+ stars)
+//   maxRate        - maximum hourly rate in dollars (e.g. "150")
 //   sort           - "rating" (default), "experience", "rate"
 //   page, limit    - pagination
 export const getLawyers = asyncHandler(async (req, res) => {
@@ -70,6 +73,8 @@ export const getLawyers = asyncHandler(async (req, res) => {
     state,
     available,
     onlineStatus,
+    minRating,
+    maxRate,
     sort = "rating",
     page = 1,
     limit = 10,
@@ -94,6 +99,12 @@ export const getLawyers = asyncHandler(async (req, res) => {
 
   // Online status filter
   if (onlineStatus) where.onlineStatus = onlineStatus;
+
+  // Rating filter (e.g. minRating=4 → rating >= 4)
+  if (minRating) where.rating = { gte: Number(minRating) };
+
+  // Rate filter — maxRate is in dollars, consultationRate is stored in cents
+  if (maxRate) where.consultationRate = { lte: Number(maxRate) * 100 };
 
   // Sort mapping
   const sortMap = {
@@ -153,11 +164,33 @@ export const getLawyer = asyncHandler(async (req, res) => {
   res.json({ success: true, data: lawyer });
 });
 
+// @desc    Record a profile view and notify the lawyer
+// @route   POST /api/lawyers/:id/view
+export const recordProfileView = asyncHandler(async (req, res) => {
+  const lawyer = await prisma.lawyerProfile.findUnique({
+    where: { id: req.params.id },
+    select: { userId: true },
+  });
+
+  if (!lawyer) {
+    res.status(404);
+    throw new Error("Lawyer not found");
+  }
+
+  // Don't notify if the viewer is the lawyer themselves
+  if (lawyer.userId !== req.user.id) {
+    const viewerName = `${req.user.firstName} ${req.user.lastName?.charAt(0) || ""}`.trim() + ".";
+    notifyProfileViewed(lawyer.userId, viewerName);
+  }
+
+  res.json({ success: true });
+});
+
 // @desc    Update lawyer profile
 // @route   PUT /api/lawyers/profile
 export const updateLawyerProfile = asyncHandler(async (req, res) => {
   const {
-    specializations, bio, consultationRate, languages, isAvailable,
+    title, specializations, bio, consultationRate, languages, isAvailable,
     yearsExperience, professionalSummary, education, previousFirms,
     certifications, courtLevels, linkedInUrl, profilePhoto, licenseImage,
     idImage,
@@ -165,6 +198,7 @@ export const updateLawyerProfile = asyncHandler(async (req, res) => {
 
   // Build update payload — only include fields that were actually sent
   const data = {};
+  if (title !== undefined) data.title = title;
   if (specializations !== undefined) data.specializations = specializations;
   if (bio !== undefined) data.bio = bio;
   if (consultationRate !== undefined) data.consultationRate = consultationRate;

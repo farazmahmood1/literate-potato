@@ -29,6 +29,21 @@ export const createJobPost = asyncHandler(async (req, res) => {
   }
 
   // Create job post with 15min expiry
+  // Find all verified lawyers in this state with matching specialization
+  // Notify online + offline lawyers. Exclude busy lawyers.
+  const matchingLawyers = await prisma.lawyerProfile.findMany({
+    where: {
+      licenseState: state,
+      specializations: { has: category },
+      verificationStatus: "VERIFIED",
+      onlineStatus: { not: "busy" },
+    },
+    include: {
+      user: { select: { id: true, expoPushToken: true } },
+    },
+  });
+
+  // Create job post with 15min expiry — store lawyersNotified count
   const jobPost = await prisma.jobPost.create({
     data: {
       clientId: req.user.id,
@@ -38,40 +53,33 @@ export const createJobPost = asyncHandler(async (req, res) => {
       description,
       summary: summary || description.substring(0, 300),
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      lawyersNotified: matchingLawyers.length,
     },
     include: {
       client: { select: { firstName: true, lastName: true, avatar: true } },
     },
   });
 
-  // Find all lawyers in this state with matching specialization
-  const matchingLawyers = await prisma.lawyerProfile.findMany({
-    where: {
-      licenseState: state,
-      specializations: { has: category },
-      isAvailable: true,
-      verificationStatus: "VERIFIED",
-    },
-    include: {
-      user: { select: { id: true, expoPushToken: true } },
-    },
-  });
-
   const clientName = `${jobPost.client.firstName} ${jobPost.client.lastName}`;
+  const onlineLawyersCount = matchingLawyers.filter(
+    (l) => l.onlineStatus === "online"
+  ).length;
 
   // Send push notification + socket event to each matching lawyer
-  const io = getIO();
   for (const lawyer of matchingLawyers) {
     // Socket notification
-    io.to(`user:${lawyer.user.id}`).emit("new-job-post", {
-      jobPostId: jobPost.id,
-      category,
-      state,
-      urgency: jobPost.urgency,
-      summary: jobPost.summary,
-      clientName,
-      createdAt: jobPost.createdAt,
-    });
+    try {
+      const io = getIO();
+      io.to(`user:${lawyer.user.id}`).emit("new-job-post", {
+        jobPostId: jobPost.id,
+        category,
+        state,
+        urgency: jobPost.urgency,
+        summary: jobPost.summary,
+        clientName,
+        createdAt: jobPost.createdAt,
+      });
+    } catch {}
 
     // Push notification
     notifyNewJobPost(lawyer.user.id, clientName, category, state, jobPost.id);
@@ -82,6 +90,7 @@ export const createJobPost = asyncHandler(async (req, res) => {
     data: {
       ...jobPost,
       lawyersNotified: matchingLawyers.length,
+      onlineLawyersCount,
     },
   });
 });
@@ -135,6 +144,7 @@ export const getJobPosts = asyncHandler(async (req, res) => {
         acceptedByLawyer: {
           include: { user: { select: { firstName: true, lastName: true, avatar: true } } },
         },
+        _count: { select: { views: true } },
       },
       orderBy: { createdAt: "desc" },
       skip,
@@ -196,9 +206,16 @@ export const getJobPosts = asyncHandler(async (req, res) => {
     }
   }
 
+  // Map viewCount from _count onto each job post
+  const enriched = jobPosts.map((jp) => ({
+    ...jp,
+    viewCount: jp._count?.views ?? 0,
+    _count: undefined,
+  }));
+
   res.json({
     success: true,
-    data: jobPosts,
+    data: enriched,
     pagination: {
       page: Number(page),
       limit: Number(limit),

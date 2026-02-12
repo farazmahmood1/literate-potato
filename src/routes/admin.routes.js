@@ -28,6 +28,12 @@ import {
   getTopLawyers,
   getVisitorStats,
 } from "../controllers/admin.controller.js";
+import {
+  getAdminTickets,
+  getAdminTicket,
+  adminReply,
+  updateTicketStatus,
+} from "../controllers/admin-ticket.controller.js";
 
 const router = Router();
 
@@ -50,6 +56,10 @@ router.get("/disputes", getAdminDisputes);
 router.get("/disputes/:id", getAdminDisputeDetail);
 router.put("/disputes/:id/resolve", resolveDispute);
 router.post("/disputes/:id/note", addAdminNote);
+router.get("/tickets", getAdminTickets);
+router.get("/tickets/:id", getAdminTicket);
+router.post("/tickets/:id/replies", adminReply);
+router.put("/tickets/:id/status", updateTicketStatus);
 router.get("/signups", getRecentSignups);
 router.post("/notifications/broadcast", sendBroadcastNotification);
 router.get("/notifications/broadcast", getBroadcastHistory);

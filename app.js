@@ -26,6 +26,7 @@ import adminRoutes from "./src/routes/admin.routes.js";
 import callRoutes from "./src/routes/call.routes.js";
 import jobPostRoutes from "./src/routes/job-post.routes.js";
 import disputeRoutes from "./src/routes/dispute.routes.js";
+import ticketRoutes from "./src/routes/ticket.routes.js";
 import webRegisterRoutes from "./src/routes/web-register.routes.js";
 import trackingRoutes from "./src/routes/tracking.routes.js";
 import { errorHandler, notFound } from "./src/middlewares/error.middleware.js";
@@ -86,6 +87,7 @@ app.use("/api/files", fileUploadRoutes);
 app.use("/api/calls", callRoutes);
 app.use("/api/job-posts", jobPostRoutes);
 app.use("/api/disputes", disputeRoutes);
+app.use("/api/tickets", ticketRoutes);
 app.use("/api/web-register", webRegisterRoutes);
 
 // Error handling

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { body } from "express-validator";
-import { createLawyerProfile, getLawyers, getFeaturedLawyers, getLawyer, getLawyerReviews, updateLawyerProfile, uploadProfilePhoto } from "../controllers/lawyer.controller.js";
+import { createLawyerProfile, getLawyers, getFeaturedLawyers, getLawyer, getLawyerReviews, updateLawyerProfile, uploadProfilePhoto, recordProfileView } from "../controllers/lawyer.controller.js";
 import { protect, authorize } from "../middlewares/auth.middleware.js";
 import { validate } from "../middlewares/validate.middleware.js";
 
@@ -10,6 +10,7 @@ router.get("/", getLawyers);
 router.get("/featured", getFeaturedLawyers);
 router.get("/:id", getLawyer);
 router.get("/:id/reviews", getLawyerReviews);
+router.post("/:id/view", protect, recordProfileView);
 
 router.post(
   "/profile",

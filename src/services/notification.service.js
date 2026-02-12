@@ -17,6 +17,8 @@ import {
   emailDisputeOpened,
   emailDisputeResolved,
   emailDisputeEscalated,
+  emailTicketReply,
+  emailTicketStatusChanged,
 } from "./email.service.js";
 
 const expo = new Expo();
@@ -681,6 +683,21 @@ export function notifyJobPostAccepted(clientUserId, lawyerName, jobPostId, consu
 }
 
 // ─────────────────────────────────────────────────────
+// Profile view notifications
+// ─────────────────────────────────────────────────────
+
+/**
+ * Notify a lawyer that someone viewed their profile.
+ */
+export function notifyProfileViewed(lawyerUserId, viewerName) {
+  // In-app only — no push or email for profile views
+  createInAppNotification(lawyerUserId, "profile_viewed", "Profile Viewed",
+    `${viewerName} viewed your profile.`,
+    {}
+  );
+}
+
+// ─────────────────────────────────────────────────────
 // Inactivity reminder (for lawyers)
 // ─────────────────────────────────────────────────────
 
@@ -843,5 +860,46 @@ export function notifyDisputeDeadline(userId, disputeId, deadlineType) {
   createInAppNotification(userId, "dispute_deadline", "Dispute Deadline",
     msg,
     { disputeId, deadlineType }
+  );
+}
+
+// ─────────────────────────────────────────────────────
+// Support Ticket notifications
+// ─────────────────────────────────────────────────────
+
+/**
+ * Notify user that an admin replied to their support ticket.
+ */
+export function notifyTicketReply(userId, ticketId, subject) {
+  sendToUserIfAllowed(userId, "consultationUpdates", "Support Ticket Update",
+    `An admin replied to your ticket: "${subject}"`,
+    { type: "ticket_reply", ticketId }
+  );
+
+  emailTicketReply(userId, subject, ticketId);
+
+  createInAppNotification(userId, "ticket_reply", "Support Ticket Update",
+    `An admin replied to your ticket: "${subject}"`,
+    { ticketId }
+  );
+}
+
+/**
+ * Notify user that their support ticket status changed (resolved/closed).
+ */
+export function notifyTicketStatusChanged(userId, ticketId, subject, newStatus) {
+  const statusLabel = newStatus === "RESOLVED" ? "resolved" : newStatus === "CLOSED" ? "closed" : "updated";
+  const title = "Ticket " + statusLabel.charAt(0).toUpperCase() + statusLabel.slice(1);
+
+  sendToUserIfAllowed(userId, "consultationUpdates", title,
+    `Your support ticket "${subject}" has been ${statusLabel}.`,
+    { type: "ticket_status_changed", ticketId, status: newStatus }
+  );
+
+  emailTicketStatusChanged(userId, subject, newStatus, ticketId);
+
+  createInAppNotification(userId, "ticket_status_changed", title,
+    `Your support ticket "${subject}" has been ${statusLabel}.`,
+    { ticketId, status: newStatus }
   );
 }

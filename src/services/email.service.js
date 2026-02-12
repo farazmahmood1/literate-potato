@@ -433,3 +433,51 @@ export function emailDisputeEscalated(userId, disputeId) {
 
   sendToUserIfAllowed(userId, "Dispute Escalated to Admin Review", html);
 }
+
+// ─── Report Warnings ───
+
+export function emailReportWarning(userId, reportCount) {
+  const html = heading("Account Warning: Multiple Reports Received")
+    + paragraph(`Your account has received <strong>${reportCount} reports</strong> from other users. This is a warning that your account may be at risk of suspension.`)
+    + paragraph("Please review your recent interactions and ensure they comply with our community guidelines and terms of service.")
+    + paragraph("<strong>What you can do:</strong>")
+    + paragraph("&bull; Review our <a href='" + APP_URL + "/terms' style='color:#1A2B5F;'>Terms of Service</a><br/>&bull; Ensure respectful and professional communication<br/>&bull; Contact support if you believe reports were filed in error")
+    + paragraph("<em style='color:#FF3B30;'>Accounts that accumulate 10 or more reports may be suspended.</em>");
+
+  sendToUserIfAllowed(userId, "Account Warning: Multiple Reports", html);
+}
+
+export function emailAccountSuspended(userId, reportCount) {
+  const html = heading("Account Suspended")
+    + paragraph(`Your account has been suspended due to receiving <strong>${reportCount} reports</strong> from other users.`)
+    + paragraph("While your account is suspended, you will not be able to use the platform's services.")
+    + paragraph("If you believe this action was taken in error, please contact our support team for a review.")
+    + ctaButton("Contact Support", `${APP_URL}/support`);
+
+  sendToUserIfAllowed(userId, "Account Suspended", html);
+}
+
+// ─── Support Tickets ───
+
+export function emailTicketReply(userId, subject, ticketId) {
+  const html = heading("New Reply on Your Support Ticket")
+    + paragraph(`We've replied to your support ticket: <strong>${subject}</strong>.`)
+    + paragraph("Open the app to view the full response and continue the conversation if needed.")
+    + ctaButton("View Ticket", `${APP_URL}/tickets/${ticketId}`)
+    + divider()
+    + paragraph("<span style='color:#888;'>Our support team typically responds within 24 hours on business days.</span>");
+
+  sendToUserIfAllowed(userId, `Reply on your ticket: ${subject}`, html);
+}
+
+export function emailTicketStatusChanged(userId, subject, newStatus, ticketId) {
+  const statusLabel = newStatus === "RESOLVED" ? "Resolved" : newStatus === "CLOSED" ? "Closed" : "Updated";
+  const html = heading(`Support Ticket ${statusLabel}`)
+    + paragraph(`Your support ticket <strong>"${subject}"</strong> has been marked as <strong>${statusLabel}</strong>.`)
+    + (newStatus === "RESOLVED"
+      ? paragraph("If this didn't fully address your issue, you can reply to reopen the conversation.")
+      : paragraph("If you need further assistance, you can submit a new ticket anytime."))
+    + ctaButton("View Ticket", `${APP_URL}/tickets/${ticketId}`);
+
+  sendToUserIfAllowed(userId, `Your support ticket has been ${statusLabel.toLowerCase()}`, html);
+}
