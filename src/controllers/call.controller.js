@@ -8,14 +8,15 @@ import {
   notifyMissedCall,
 } from "../services/notification.service.js";
 
-/** Convert a userId string to a stable integer UID for Agora */
+/** Convert a userId string to a stable integer UID for Agora.
+ *  Must fit in a signed 32-bit int (Prisma Int / PostgreSQL integer).
+ *  Range: 1 – 2,147,483,646 */
 function userIdToUid(userId) {
   let hash = 0;
   for (let i = 0; i < userId.length; i++) {
     hash = (hash * 31 + userId.charCodeAt(i)) >>> 0;
   }
-  // Keep within 32-bit unsigned range, avoid 0 (reserved)
-  return (hash % 0xfffffffe) + 1;
+  return (hash % 0x7ffffffe) + 1; // max 2,147,483,646 — fits INT4
 }
 
 // @desc    Initiate a voice or video call
@@ -59,6 +60,12 @@ export const initiateCall = asyncHandler(async (req, res) => {
   if (!isClient && !isLawyer) {
     res.status(403);
     throw new Error("Not authorized to initiate a call in this consultation");
+  }
+
+  // Only the client may initiate calls
+  if (!isClient) {
+    res.status(403);
+    throw new Error("Only the client can initiate calls");
   }
 
   // Block calls on ended consultations

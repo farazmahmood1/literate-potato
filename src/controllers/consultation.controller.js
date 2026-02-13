@@ -548,3 +548,80 @@ export const requestConsultation = asyncHandler(async (req, res) => {
 
   res.json({ success: true, data: updated });
 });
+
+// @desc    Get recent contacts (lawyers the client has chatted with)
+// @route   GET /api/consultations/recent-contacts
+export const getRecentContacts = asyncHandler(async (req, res) => {
+  const { search } = req.query;
+
+  // Find all consultations for this user with distinct other-party lawyers
+  const consultations = await prisma.consultation.findMany({
+    where: { clientId: req.user.id },
+    select: {
+      id: true,
+      category: true,
+      status: true,
+      updatedAt: true,
+      lawyer: {
+        select: {
+          id: true,
+          licenseState: true,
+          specializations: true,
+          rating: true,
+          profilePhoto: true,
+          user: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              avatar: true,
+            },
+          },
+        },
+      },
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+
+  // Deduplicate by lawyer profile ID, keeping the most recent consultation
+  const lawyerMap = new Map();
+  for (const c of consultations) {
+    if (!c.lawyer) continue;
+    if (!lawyerMap.has(c.lawyer.id)) {
+      lawyerMap.set(c.lawyer.id, {
+        lawyerProfileId: c.lawyer.id,
+        userId: c.lawyer.user.id,
+        firstName: c.lawyer.user.firstName,
+        lastName: c.lawyer.user.lastName,
+        avatar: c.lawyer.user.avatar || c.lawyer.profilePhoto,
+        licenseState: c.lawyer.licenseState,
+        specializations: c.lawyer.specializations,
+        rating: c.lawyer.rating,
+        lastConsultation: {
+          id: c.id,
+          category: c.category,
+          status: c.status,
+          updatedAt: c.updatedAt,
+        },
+      });
+    }
+  }
+
+  let contacts = Array.from(lawyerMap.values());
+
+  // Apply search filter if provided
+  if (search) {
+    const q = search.toLowerCase();
+    contacts = contacts.filter(
+      (c) =>
+        c.firstName.toLowerCase().includes(q) ||
+        c.lastName.toLowerCase().includes(q) ||
+        c.specializations.some((s) => s.toLowerCase().includes(q))
+    );
+  }
+
+  res.json({
+    success: true,
+    data: contacts,
+  });
+});

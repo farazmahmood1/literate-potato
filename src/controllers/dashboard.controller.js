@@ -311,7 +311,6 @@ export const getLawyerDashboardSummary = asyncHandler(async (req, res) => {
       where: {
         lawyerId: lawyerProfile.id,
         status: "PENDING",
-        requestedType: { not: null },
       },
       include: {
         client: { select: { firstName: true, lastName: true, avatar: true } },

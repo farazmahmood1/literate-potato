@@ -8,37 +8,64 @@ import {
   scheduleTrialNotifications,
 } from "../services/notification.service.js";
 
-// @desc    Create a job post (broadcast to all lawyers)
+// @desc    Create a job post (broadcast to all lawyers, or targeted to one)
 // @route   POST /api/job-posts
 export const createJobPost = asyncHandler(async (req, res) => {
-  const { category, state, urgency, description, summary } = req.body;
+  const { category, state, urgency, description, summary, targetLawyerId } = req.body;
 
-  // Check for existing open job post by this client for same category
-  const existing = await prisma.jobPost.findFirst({
-    where: {
-      clientId: req.user.id,
-      category,
-      status: "OPEN",
-    },
-  });
+  // For broadcast posts, check for existing open job post by this client for same category
+  if (!targetLawyerId) {
+    const existing = await prisma.jobPost.findFirst({
+      where: {
+        clientId: req.user.id,
+        category,
+        status: "OPEN",
+        targetLawyerId: null,
+      },
+    });
 
-  if (existing) {
-    res.status(400);
-    throw new Error("You already have an open job post for this category");
+    if (existing) {
+      res.status(400);
+      throw new Error("You already have an open job post for this category");
+    }
   }
 
-  // Create job post with 15min expiry
-  // Find verified lawyers licensed in the job post's state. Exclude busy.
-  const allLawyers = await prisma.lawyerProfile.findMany({
-    where: {
-      verificationStatus: "VERIFIED",
-      onlineStatus: { not: "busy" },
-      ...(state ? { licenseState: state } : {}),
-    },
-    include: {
-      user: { select: { id: true, expoPushToken: true } },
-    },
-  });
+  // Determine which lawyers to notify
+  let lawyersToNotify = [];
+
+  if (targetLawyerId) {
+    // Targeted invite — only notify the specific lawyer (bypass state/verification filters)
+    const targetLawyer = await prisma.lawyerProfile.findUnique({
+      where: { id: targetLawyerId },
+      include: {
+        user: { select: { id: true, expoPushToken: true } },
+      },
+    });
+
+    if (!targetLawyer) {
+      res.status(404);
+      throw new Error("Target lawyer not found");
+    }
+
+    lawyersToNotify = [targetLawyer];
+  } else {
+    // Broadcast — find verified lawyers licensed in the job post's state, exclude busy
+    // Note: onlineStatus can be null for lawyers who haven't toggled status yet,
+    // so we explicitly exclude only "busy" (null and "online"/"offline" are allowed)
+    lawyersToNotify = await prisma.lawyerProfile.findMany({
+      where: {
+        verificationStatus: "VERIFIED",
+        OR: [
+          { onlineStatus: null },
+          { onlineStatus: { not: "busy" } },
+        ],
+        ...(state ? { licenseState: state } : {}),
+      },
+      include: {
+        user: { select: { id: true, expoPushToken: true } },
+      },
+    });
+  }
 
   // Create job post with 15min expiry — store lawyersNotified count
   const jobPost = await prisma.jobPost.create({
@@ -50,7 +77,8 @@ export const createJobPost = asyncHandler(async (req, res) => {
       description,
       summary: summary || description.substring(0, 300),
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
-      lawyersNotified: allLawyers.length,
+      lawyersNotified: lawyersToNotify.length,
+      ...(targetLawyerId ? { targetLawyerId } : {}),
     },
     include: {
       client: { select: { firstName: true, lastName: true, avatar: true } },
@@ -58,12 +86,23 @@ export const createJobPost = asyncHandler(async (req, res) => {
   });
 
   const clientName = `${jobPost.client.firstName} ${jobPost.client.lastName}`;
-  const onlineLawyersCount = allLawyers.filter(
+  const onlineLawyersCount = lawyersToNotify.filter(
     (l) => l.onlineStatus === "online"
   ).length;
 
+  const lawyersWithTokens = lawyersToNotify.filter((l) => l.user.expoPushToken);
+  console.log(
+    `[JobPost] Created ${jobPost.id}${targetLawyerId ? " (targeted)" : ""} — ${lawyersToNotify.length} lawyers matched (${onlineLawyersCount} online, ${lawyersWithTokens.length} with push tokens)`,
+  );
+  if (lawyersToNotify.length === 0) {
+    console.log(`[JobPost] No lawyers matched. Filters: state=${state}, verificationStatus=VERIFIED. Check if test lawyers are verified.`);
+  }
+  for (const l of lawyersToNotify) {
+    console.log(`[JobPost]   → Lawyer ${l.id} (userId: ${l.user.id}), status: ${l.onlineStatus}, token: ${l.user.expoPushToken ? 'yes' : 'NO'}`);
+  }
+
   // Send push notification + socket event to each lawyer
-  for (const lawyer of allLawyers) {
+  for (const lawyer of lawyersToNotify) {
     // Socket notification
     try {
       const io = getIO();
@@ -75,11 +114,10 @@ export const createJobPost = asyncHandler(async (req, res) => {
         summary: jobPost.summary,
         clientName,
         createdAt: jobPost.createdAt,
+        isDirectInvite: !!targetLawyerId,
       });
     } catch (err) {
-      if (process.env.NODE_ENV !== "production") {
-        console.warn("Socket emit error (newJobPost):", err?.message);
-      }
+      console.warn("[JobPost] Socket emit error:", err?.message);
     }
 
     // Push notification
@@ -90,7 +128,7 @@ export const createJobPost = asyncHandler(async (req, res) => {
     success: true,
     data: {
       ...jobPost,
-      lawyersNotified: allLawyers.length,
+      lawyersNotified: lawyersToNotify.length,
       onlineLawyersCount,
     },
   });
@@ -104,15 +142,25 @@ export const getJobPosts = asyncHandler(async (req, res) => {
   let where = {};
 
   if (req.user.role === "LAWYER") {
-    // Lawyers see open job posts filtered by their licensed state
+    // Lawyers see open job posts filtered by their licensed state,
+    // PLUS any posts directly targeted to them (bypass state filter)
     const lawyerProfile = await prisma.lawyerProfile.findUnique({
       where: { userId: req.user.id },
-      select: { licenseState: true },
+      select: { id: true, licenseState: true },
     });
 
-    where = {
+    const stateFilter = {
       ...(status !== "all" && { status }),
       ...(lawyerProfile?.licenseState && { state: lawyerProfile.licenseState }),
+    };
+
+    const targetedFilter = {
+      targetLawyerId: lawyerProfile?.id,
+      ...(status !== "all" && { status }),
+    };
+
+    where = {
+      OR: [stateFilter, targetedFilter],
     };
   } else {
     // Clients see their own job posts
@@ -475,4 +523,54 @@ export const closeJobPost = asyncHandler(async (req, res) => {
   }
 
   res.json({ success: true, data: updated });
+});
+
+// @desc    Delete a job post (client only, non-ACCEPTED posts)
+// @route   DELETE /api/job-posts/:id
+export const deleteJobPost = asyncHandler(async (req, res) => {
+  const jobPost = await prisma.jobPost.findUnique({
+    where: { id: req.params.id },
+  });
+
+  if (!jobPost) {
+    res.status(404);
+    throw new Error("Job post not found");
+  }
+
+  if (jobPost.clientId !== req.user.id) {
+    res.status(403);
+    throw new Error("Not authorized");
+  }
+
+  if (jobPost.status === "ACCEPTED") {
+    res.status(400);
+    throw new Error("Cannot delete an accepted job post that has an active consultation");
+  }
+
+  // If still OPEN, notify lawyers before deleting
+  if (jobPost.status === "OPEN") {
+    try {
+      const io = getIO();
+      const lawyersInState = await prisma.lawyerProfile.findMany({
+        where: {
+          verificationStatus: "VERIFIED",
+          ...(jobPost.state ? { licenseState: jobPost.state } : {}),
+        },
+        select: { userId: true },
+      });
+      for (const lp of lawyersInState) {
+        io.to(`user:${lp.userId}`).emit("job-post-status-change", {
+          jobPostId: jobPost.id,
+          status: "CLOSED",
+        });
+      }
+    } catch {
+      // Silent fail for socket
+    }
+  }
+
+  // Hard delete — JobPostViews cascade via onDelete: Cascade in schema
+  await prisma.jobPost.delete({ where: { id: req.params.id } });
+
+  res.json({ success: true, message: "Job post deleted" });
 });

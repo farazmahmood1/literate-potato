@@ -131,13 +131,20 @@ export function initSocket(httpServer) {
           },
         });
 
-        // Broadcast to the room
+        // Broadcast to the consultation room
         io.to(`consultation:${consultationId}`).emit("new-message", message);
 
+        // Also emit to both users' personal rooms for guaranteed delivery
+        // (ensures messages arrive even if recipient hasn't joined the consultation room yet)
+        const lawyerUserId = (await prisma.lawyerProfile.findUnique({
+          where: { id: consultation.lawyerId },
+          select: { userId: true },
+        }))?.userId;
+        if (lawyerUserId) io.to(`user:${lawyerUserId}`).emit("new-message", message);
+        io.to(`user:${consultation.clientId}`).emit("new-message", message);
+
         // Push notification to the other participant
-        const otherUserId = consultation.clientId === userId
-          ? (await prisma.lawyerProfile.findUnique({ where: { id: consultation.lawyerId }, select: { userId: true } }))?.userId
-          : consultation.clientId;
+        const otherUserId = consultation.clientId === userId ? lawyerUserId : consultation.clientId;
         if (otherUserId) {
           const senderName = `${socket.user.firstName} ${socket.user.lastName}`.trim();
           notifyNewMessage(otherUserId, senderName, messageType, content, consultationId);

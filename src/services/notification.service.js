@@ -102,6 +102,7 @@ export async function sendToUser(userId, title, body, data = {}) {
   });
 
   if (!user || !user.expoPushToken) {
+    console.log(`[Notification] No push token for user ${userId} — skipping push`);
     return null;
   }
 

@@ -165,8 +165,9 @@ model LawyerProfile {
   reviews          Review[]
   serviceOffers    ServiceOffer[]
   savedByUsers     SavedLawyer[]  @relation("LawyerSavedByUsers")
-  acceptedJobPosts JobPost[]      @relation("AcceptedJobPosts")
-  jobPostViews     JobPostView[]  @relation("LawyerJobPostViews")
+  acceptedJobPosts  JobPost[]      @relation("AcceptedJobPosts")
+  targetedJobPosts  JobPost[]      @relation("TargetedJobPosts")
+  jobPostViews      JobPostView[]  @relation("LawyerJobPostViews")
 
   @@map("lawyer_profiles")
 }
@@ -356,12 +357,14 @@ model JobPost {
   lawyersNotified    Int           @default(0)
   acceptedByLawyerId String?
   consultationId     String?       @unique
+  targetLawyerId     String?
   expiresAt          DateTime?
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
 
   client             User           @relation("ClientJobPosts", fields: [clientId], references: [id])
   acceptedByLawyer   LawyerProfile? @relation("AcceptedJobPosts", fields: [acceptedByLawyerId], references: [id])
+  targetLawyer       LawyerProfile? @relation("TargetedJobPosts", fields: [targetLawyerId], references: [id])
   consultation       Consultation?  @relation("JobPostConsultation", fields: [consultationId], references: [id])
   views              JobPostView[]  @relation("JobPostViews")
 

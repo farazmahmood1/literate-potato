@@ -8,6 +8,7 @@ import {
   addReview,
   analyzeIssue,
   requestConsultation,
+  getRecentContacts,
 } from "../controllers/consultation.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 import { validate } from "../middlewares/validate.middleware.js";
@@ -35,6 +36,7 @@ router.post(
 );
 
 router.get("/", getConsultations);
+router.get("/recent-contacts", getRecentContacts);
 router.get("/:id", getConsultation);
 
 router.put(
