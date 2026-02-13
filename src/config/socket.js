@@ -6,6 +6,17 @@ import { moderateMessage } from "../services/moderation.service.js";
 
 let io;
 
+// Track connected sockets per userId: Map<userId, Set<socketId>>
+const connectedUsers = new Map();
+
+/**
+ * Check if a user is currently connected via at least one socket.
+ */
+export function isUserOnline(userId) {
+  const sockets = connectedUsers.get(userId);
+  return sockets && sockets.size > 0;
+}
+
 export function initSocket(httpServer) {
   io = new Server(httpServer, {
     cors: {
@@ -44,15 +55,38 @@ export function initSocket(httpServer) {
 
   io.on("connection", (socket) => {
     const userId = socket.user.id;
+    const userRole = socket.user.role;
 
     // Join personal room for direct notifications
     socket.join(`user:${userId}`);
+
+    // ─── Track user connection for online status ───
+    if (!connectedUsers.has(userId)) {
+      connectedUsers.set(userId, new Set());
+    }
+    const wasOffline = connectedUsers.get(userId).size === 0;
+    connectedUsers.get(userId).add(socket.id);
+
+    // Broadcast online status if user just came online
+    if (wasOffline) {
+      io.emit("user-status-change", { userId, status: "online" });
+    }
 
     // Update lastActiveAt
     prisma.user.update({
       where: { id: userId },
       data: { lastActiveAt: new Date() },
     }).catch(() => {});
+
+    // ─── Query online status for specific users ───
+    socket.on("get-users-status", (userIds) => {
+      if (!Array.isArray(userIds)) return;
+      const statuses = {};
+      for (const uid of userIds) {
+        statuses[uid] = isUserOnline(uid) ? "online" : "offline";
+      }
+      socket.emit("users-status-response", statuses);
+    });
 
     // ─── Join a consultation room ───
     socket.on("join-consultation", async ({ consultationId }) => {
@@ -195,6 +229,17 @@ export function initSocket(httpServer) {
 
     // ─── Disconnect ───
     socket.on("disconnect", () => {
+      // Remove socket from connected set
+      const sockets = connectedUsers.get(userId);
+      if (sockets) {
+        sockets.delete(socket.id);
+        // If no more sockets for this user, they're offline
+        if (sockets.size === 0) {
+          connectedUsers.delete(userId);
+          io.emit("user-status-change", { userId, status: "offline" });
+        }
+      }
+
       prisma.user.update({
         where: { id: userId },
         data: { lastActiveAt: new Date() },

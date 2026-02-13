@@ -241,12 +241,13 @@ export const getConsultations = asyncHandler(async (req, res) => {
     prisma.consultation.findMany({
       where,
       include: {
-        client: { select: { firstName: true, lastName: true, avatar: true } },
+        client: { select: { id: true, firstName: true, lastName: true, avatar: true } },
         lawyer: {
           select: {
             id: true,
+            userId: true,
             onlineStatus: true,
-            user: { select: { firstName: true, lastName: true, avatar: true } },
+            user: { select: { id: true, firstName: true, lastName: true, avatar: true } },
           },
         },
         messages: {
@@ -294,9 +295,9 @@ export const getConsultation = asyncHandler(async (req, res) => {
   const consultation = await prisma.consultation.findUnique({
     where: { id: req.params.id },
     include: {
-      client: { select: { firstName: true, lastName: true, avatar: true, email: true } },
+      client: { select: { id: true, firstName: true, lastName: true, avatar: true, email: true } },
       lawyer: {
-        include: { user: { select: { firstName: true, lastName: true, avatar: true } } },
+        include: { user: { select: { id: true, firstName: true, lastName: true, avatar: true } } },
       },
       payment: true,
       review: true,
