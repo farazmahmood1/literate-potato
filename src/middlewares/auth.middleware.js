@@ -1,6 +1,9 @@
 import { clerkMiddleware, getAuth } from "@clerk/express";
 import prisma from "../lib/prisma.js";
 
+// Throttle cache for lastActiveAt updates (prevents DB write on every request)
+const _lastActiveCache = {};
+
 // Clerk middleware - attach to app level
 export const clerk = clerkMiddleware();
 
@@ -34,6 +37,18 @@ export const protect = async (req, res, next) => {
     }
 
     req.user = user;
+
+    // Fire-and-forget lastActiveAt update (throttled: once per 30s per user)
+    const now = Date.now();
+    const cacheKey = user.id;
+    if (!_lastActiveCache[cacheKey] || now - _lastActiveCache[cacheKey] > 30000) {
+      _lastActiveCache[cacheKey] = now;
+      prisma.user.update({
+        where: { id: user.id },
+        data: { lastActiveAt: new Date() },
+      }).catch(() => {});
+    }
+
     next();
   } catch (error) {
     next(error);

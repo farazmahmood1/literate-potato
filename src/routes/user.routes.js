@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { body } from "express-validator";
-import { updateProfile, uploadAvatar, deleteAccount } from "../controllers/user.controller.js";
+import { updateProfile, uploadAvatar, deleteAccount, heartbeat } from "../controllers/user.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 import { validate } from "../middlewares/validate.middleware.js";
 
@@ -19,6 +19,8 @@ router.put(
 );
 
 router.put("/avatar", uploadAvatar);
+
+router.post("/heartbeat", heartbeat);
 
 router.delete("/account", deleteAccount);
 

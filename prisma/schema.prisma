@@ -377,6 +377,7 @@ model JobPostView {
   jobPostId  String
   lawyerId   String
   lawyerName String
+  declined   Boolean  @default(false)
   viewedAt   DateTime @default(now())
 
   jobPost JobPost       @relation("JobPostViews", fields: [jobPostId], references: [id], onDelete: Cascade)

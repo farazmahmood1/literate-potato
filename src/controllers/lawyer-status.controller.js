@@ -5,6 +5,7 @@ import {
   notifyConsultationAccepted,
   notifyConsultationDeclined,
   scheduleTrialNotifications,
+  cancelTrialNotifications,
 } from "../services/notification.service.js";
 
 // @desc    Update lawyer online status
@@ -172,6 +173,9 @@ export const declineConsultation = asyncHandler(async (req, res) => {
       notes: reason || "Declined by lawyer",
     },
   });
+
+  // Cancel any pending trial notifications for this consultation
+  cancelTrialNotifications(updated.id);
 
   // Emit socket events
   try {

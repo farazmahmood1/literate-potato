@@ -88,6 +88,9 @@ export function initSocket(httpServer) {
       socket.emit("users-status-response", statuses);
     });
 
+    // Track current consultation room per socket to leave old before joining new
+    let currentConsultationRoom = null;
+
     // ─── Join a consultation room ───
     socket.on("join-consultation", async ({ consultationId }) => {
       try {
@@ -103,7 +106,14 @@ export function initSocket(httpServer) {
         const isLawyer = consultation.lawyer.userId === userId;
         if (!isClient && !isLawyer) return;
 
-        socket.join(`consultation:${consultationId}`);
+        // Leave previous consultation room before joining new one
+        if (currentConsultationRoom && currentConsultationRoom !== `consultation:${consultationId}`) {
+          socket.leave(currentConsultationRoom);
+        }
+
+        const roomName = `consultation:${consultationId}`;
+        socket.join(roomName);
+        currentConsultationRoom = roomName;
         socket.emit("joined-consultation", { consultationId });
       } catch (err) {
         socket.emit("error", { message: "Failed to join consultation" });
@@ -198,7 +208,7 @@ export function initSocket(httpServer) {
     socket.on("typing-start", ({ consultationId }) => {
       socket.to(`consultation:${consultationId}`).emit("typing-start", {
         userId,
-        name: `${socket.user.firstName}`,
+        name: `${socket.user.firstName} ${socket.user.lastName || ""}`.trim(),
       });
     });
 

@@ -136,6 +136,41 @@ export const deleteAccount = asyncHandler(async (req, res) => {
   res.json({ success: true, message: "Account and all personal data have been permanently deleted." });
 });
 
+// @desc    Heartbeat — update lastActiveAt + return online statuses for given userIds
+// @route   POST /api/users/heartbeat
+export const heartbeat = asyncHandler(async (req, res) => {
+  const { userIds } = req.body; // optional: array of userIds to check status
+
+  // Update caller's lastActiveAt
+  await prisma.user.update({
+    where: { id: req.user.id },
+    data: { lastActiveAt: new Date() },
+  });
+
+  // If caller is a lawyer, also update LawyerProfile lastActiveAt
+  if (req.user.role === "LAWYER") {
+    prisma.lawyerProfile.updateMany({
+      where: { userId: req.user.id },
+      data: { lastActiveAt: new Date() },
+    }).catch(() => {});
+  }
+
+  // Return online statuses for requested userIds (based on lastActiveAt within 2 min)
+  const statuses = {};
+  if (Array.isArray(userIds) && userIds.length > 0) {
+    const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
+    const users = await prisma.user.findMany({
+      where: { id: { in: userIds.slice(0, 50) } },
+      select: { id: true, lastActiveAt: true },
+    });
+    for (const u of users) {
+      statuses[u.id] = u.lastActiveAt && u.lastActiveAt > twoMinAgo ? "online" : "offline";
+    }
+  }
+
+  res.json({ success: true, statuses });
+});
+
 // @desc    Upload avatar
 // @route   PUT /api/users/avatar
 export const uploadAvatar = asyncHandler(async (req, res) => {

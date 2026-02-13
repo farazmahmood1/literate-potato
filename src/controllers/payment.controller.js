@@ -82,10 +82,10 @@ export const stripeWebhook = asyncHandler(async (req, res) => {
       data: { status: "SUCCEEDED" },
     });
 
-    // Activate the consultation (move from TRIAL to ACTIVE)
+    // Activate the consultation (move from TRIAL to ACTIVE, clear trial end time)
     const consultation = await prisma.consultation.update({
       where: { id: consultationId },
-      data: { status: "ACTIVE" },
+      data: { status: "ACTIVE", trialEndAt: null },
       include: {
         lawyer: { include: { user: { select: { id: true } } } },
       },

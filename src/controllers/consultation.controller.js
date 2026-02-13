@@ -241,13 +241,14 @@ export const getConsultations = asyncHandler(async (req, res) => {
     prisma.consultation.findMany({
       where,
       include: {
-        client: { select: { id: true, firstName: true, lastName: true, avatar: true } },
+        client: { select: { id: true, firstName: true, lastName: true, avatar: true, lastActiveAt: true } },
         lawyer: {
           select: {
             id: true,
             userId: true,
             onlineStatus: true,
-            user: { select: { id: true, firstName: true, lastName: true, avatar: true } },
+            lastActiveAt: true,
+            user: { select: { id: true, firstName: true, lastName: true, avatar: true, lastActiveAt: true } },
           },
         },
         messages: {
@@ -295,9 +296,9 @@ export const getConsultation = asyncHandler(async (req, res) => {
   const consultation = await prisma.consultation.findUnique({
     where: { id: req.params.id },
     include: {
-      client: { select: { id: true, firstName: true, lastName: true, avatar: true, email: true } },
+      client: { select: { id: true, firstName: true, lastName: true, avatar: true, email: true, lastActiveAt: true } },
       lawyer: {
-        include: { user: { select: { id: true, firstName: true, lastName: true, avatar: true } } },
+        include: { user: { select: { id: true, firstName: true, lastName: true, avatar: true, lastActiveAt: true } } },
       },
       payment: true,
       review: true,
@@ -326,10 +327,42 @@ export const getConsultation = asyncHandler(async (req, res) => {
   res.json({ success: true, data: consultation });
 });
 
+// Valid status transitions
+const VALID_TRANSITIONS = {
+  PENDING: ["TRIAL", "ACTIVE", "CANCELLED"],
+  TRIAL: ["ACTIVE", "COMPLETED", "CANCELLED"],
+  ACTIVE: ["COMPLETED", "CANCELLED"],
+  COMPLETED: [],
+  CANCELLED: [],
+};
+
 // @desc    Update consultation status
 // @route   PUT /api/consultations/:id/status
 export const updateConsultationStatus = asyncHandler(async (req, res) => {
   const { status } = req.body;
+
+  // Validate the target status exists
+  if (!VALID_TRANSITIONS[status] && !Object.keys(VALID_TRANSITIONS).includes(status)) {
+    res.status(400);
+    throw new Error(`Invalid status: ${status}`);
+  }
+
+  // Check current status and validate transition
+  const current = await prisma.consultation.findUnique({
+    where: { id: req.params.id },
+    select: { status: true },
+  });
+
+  if (!current) {
+    res.status(404);
+    throw new Error("Consultation not found");
+  }
+
+  const allowed = VALID_TRANSITIONS[current.status];
+  if (allowed && !allowed.includes(status)) {
+    res.status(400);
+    throw new Error(`Cannot transition from ${current.status} to ${status}`);
+  }
 
   const now = new Date();
   const trialEndAt = status === "TRIAL"

@@ -49,16 +49,12 @@ export const createJobPost = asyncHandler(async (req, res) => {
 
     lawyersToNotify = [targetLawyer];
   } else {
-    // Broadcast — find verified lawyers licensed in the job post's state, exclude busy
-    // Note: onlineStatus can be null for lawyers who haven't toggled status yet,
-    // so we explicitly exclude only "busy" (null and "online"/"offline" are allowed)
+    // Broadcast — find ALL verified lawyers licensed in the job post's state.
+    // All lawyers (online, offline, busy) see job posts on their dashboard.
+    // Notification filtering (skip push/in-app for busy) happens in the loop below.
     lawyersToNotify = await prisma.lawyerProfile.findMany({
       where: {
         verificationStatus: "VERIFIED",
-        OR: [
-          { onlineStatus: null },
-          { onlineStatus: { not: "busy" } },
-        ],
         ...(state ? { licenseState: state } : {}),
       },
       include: {
@@ -85,7 +81,7 @@ export const createJobPost = asyncHandler(async (req, res) => {
     },
   });
 
-  const clientName = `${jobPost.client.firstName} ${jobPost.client.lastName}`;
+  const clientName = `${jobPost.client.firstName || ""} ${jobPost.client.lastName || ""}`.trim() || "Client";
   const onlineLawyersCount = lawyersToNotify.filter(
     (l) => l.onlineStatus === "online"
   ).length;
@@ -120,8 +116,10 @@ export const createJobPost = asyncHandler(async (req, res) => {
       console.warn("[JobPost] Socket emit error:", err?.message);
     }
 
-    // Push notification
-    notifyNewJobPost(lawyer.user.id, clientName, category, state, jobPost.id);
+    // Push + in-app + email — only for non-busy lawyers
+    if (lawyer.onlineStatus !== "busy") {
+      notifyNewJobPost(lawyer.user.id, clientName, category, state, jobPost.id);
+    }
   }
 
   res.status(201).json({
@@ -149,14 +147,21 @@ export const getJobPosts = asyncHandler(async (req, res) => {
       select: { id: true, licenseState: true },
     });
 
+    // Exclude posts the lawyer has declined
+    const declinedFilter = lawyerProfile
+      ? { NOT: { views: { some: { lawyerId: lawyerProfile.id, declined: true } } } }
+      : {};
+
     const stateFilter = {
       ...(status !== "all" && { status }),
       ...(lawyerProfile?.licenseState && { state: lawyerProfile.licenseState }),
+      ...declinedFilter,
     };
 
     const targetedFilter = {
       targetLawyerId: lawyerProfile?.id,
       ...(status !== "all" && { status }),
+      ...declinedFilter,
     };
 
     where = {
@@ -333,6 +338,19 @@ export const acceptJobPost = asyncHandler(async (req, res) => {
     throw new Error(`Job post is no longer open (status: ${jobPost.status})`);
   }
 
+  // Prevent abuse: block if client already has an active (unexpired) TRIAL consultation
+  const activeTrial = await prisma.consultation.findFirst({
+    where: {
+      clientId: jobPost.clientId,
+      status: "TRIAL",
+      trialEndAt: { gt: new Date() },
+    },
+  });
+  if (activeTrial) {
+    res.status(400);
+    throw new Error("Client already has an active trial consultation");
+  }
+
   const now = new Date();
   const trialEndAt = new Date(now.getTime() + 3 * 60 * 1000); // 3 min trial
 
@@ -438,7 +456,7 @@ export const acceptJobPost = asyncHandler(async (req, res) => {
   }
 
   // Push notifications
-  notifyJobPostAccepted(jobPost.clientId, lawyerName, jobPost.id, consultation.id);
+  notifyJobPostAccepted(jobPost.clientId, lawyerName, jobPost.id, consultation.id, jobPost.category);
   notifyConsultationAccepted(jobPost.clientId, lawyerName, consultation.id, trialEndAt.toISOString());
   scheduleTrialNotifications(jobPost.clientId, lawyerName, consultation.id);
 
@@ -451,7 +469,7 @@ export const acceptJobPost = asyncHandler(async (req, res) => {
   });
 });
 
-// @desc    Lawyer declines a job post (just hides it for them)
+// @desc    Lawyer declines a job post (persists so it doesn't reappear)
 // @route   PUT /api/job-posts/:id/decline
 export const declineJobPost = asyncHandler(async (req, res) => {
   const jobPost = await prisma.jobPost.findUnique({
@@ -468,8 +486,31 @@ export const declineJobPost = asyncHandler(async (req, res) => {
     throw new Error("Job post is no longer open");
   }
 
-  // We don't change the job post status — just acknowledge the decline
-  // Other lawyers can still accept it
+  // Persist the decline via JobPostView so it doesn't reappear after refresh
+  const lawyerProfile = await prisma.lawyerProfile.findUnique({
+    where: { userId: req.user.id },
+    include: { user: { select: { firstName: true, lastName: true } } },
+  });
+
+  if (lawyerProfile) {
+    const lawyerName = `${lawyerProfile.user.firstName} ${lawyerProfile.user.lastName}`.trim();
+    await prisma.jobPostView.upsert({
+      where: {
+        jobPostId_lawyerId: {
+          jobPostId: req.params.id,
+          lawyerId: lawyerProfile.id,
+        },
+      },
+      update: { declined: true },
+      create: {
+        jobPostId: req.params.id,
+        lawyerId: lawyerProfile.id,
+        lawyerName,
+        declined: true,
+      },
+    });
+  }
+
   res.json({ success: true, message: "Job post declined" });
 });
 
@@ -574,3 +615,56 @@ export const deleteJobPost = asyncHandler(async (req, res) => {
 
   res.json({ success: true, message: "Job post deleted" });
 });
+
+// ─── Background task: expire stale OPEN job posts ───
+export function startJobPostExpiryTask() {
+  const INTERVAL_MS = 60_000; // Check every minute
+
+  setInterval(async () => {
+    try {
+      const { count } = await prisma.jobPost.updateMany({
+        where: {
+          status: "OPEN",
+          expiresAt: { lt: new Date() },
+        },
+        data: { status: "EXPIRED" },
+      });
+
+      if (count > 0) {
+        console.log(`[JobPostExpiry] Marked ${count} job post(s) as EXPIRED`);
+
+        // Notify lawyers to remove expired posts from their dashboards
+        try {
+          const io = getIO();
+          const expiredPosts = await prisma.jobPost.findMany({
+            where: {
+              status: "EXPIRED",
+              updatedAt: { gte: new Date(Date.now() - INTERVAL_MS) },
+            },
+            select: { id: true, state: true },
+          });
+
+          for (const post of expiredPosts) {
+            const lawyers = await prisma.lawyerProfile.findMany({
+              where: {
+                verificationStatus: "VERIFIED",
+                ...(post.state ? { licenseState: post.state } : {}),
+              },
+              select: { userId: true },
+            });
+            for (const lp of lawyers) {
+              io.to(`user:${lp.userId}`).emit("job-post-status-change", {
+                jobPostId: post.id,
+                status: "EXPIRED",
+              });
+            }
+          }
+        } catch {}
+      }
+    } catch (err) {
+      console.error("[JobPostExpiry] Error:", err.message);
+    }
+  }, INTERVAL_MS);
+
+  console.log("[JobPostExpiry] Background task started (60s interval)");
+}

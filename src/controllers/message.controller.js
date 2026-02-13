@@ -1,6 +1,8 @@
 import asyncHandler from "express-async-handler";
 import prisma from "../lib/prisma.js";
 import { moderateMessage } from "../services/moderation.service.js";
+import { getIO } from "../config/socket.js";
+import { notifyNewMessage } from "../services/notification.service.js";
 
 // @desc    Get messages for a consultation (paginated)
 // @route   GET /api/consultations/:id/messages
@@ -116,6 +118,29 @@ export const sendMessage = asyncHandler(async (req, res) => {
         select: { id: true, firstName: true, lastName: true, avatar: true },
       },
     },
+  });
+
+  // Broadcast via socket to consultation room + personal rooms (same as socket handler)
+  try {
+    const io = getIO();
+    io.to(`consultation:${id}`).emit("new-message", message);
+    const lawyerUserId = consultation.lawyer.userId;
+    io.to(`user:${lawyerUserId}`).emit("new-message", message);
+    io.to(`user:${consultation.clientId}`).emit("new-message", message);
+  } catch {}
+
+  // Push notification to the other participant
+  const lawyerUserId = consultation.lawyer.userId;
+  const otherUserId = consultation.clientId === req.user.id ? lawyerUserId : consultation.clientId;
+  if (otherUserId) {
+    const senderName = `${req.user.firstName} ${req.user.lastName}`.trim();
+    notifyNewMessage(otherUserId, senderName, messageType, content.trim(), id);
+  }
+
+  // Update consultation updatedAt
+  await prisma.consultation.update({
+    where: { id },
+    data: { updatedAt: new Date() },
   });
 
   res.status(201).json({ success: true, data: message });

@@ -904,3 +904,34 @@ export function notifyTicketStatusChanged(userId, ticketId, subject, newStatus) 
     { ticketId, status: newStatus }
   );
 }
+
+// ─────────────────────────────────────────────────────
+// Startup cleanup: handle expired TRIAL consultations
+// that were missed because in-memory timers were lost
+// ─────────────────────────────────────────────────────
+export async function cleanupStaleTrials() {
+  try {
+    const now = new Date();
+    const staleTrials = await prisma.consultation.findMany({
+      where: {
+        status: "TRIAL",
+        trialEndAt: { lt: now },
+      },
+      select: { id: true, clientId: true },
+    });
+
+    for (const trial of staleTrials) {
+      // Send the "trial expired" push notification that was missed
+      sendToUserIfAllowed(trial.clientId, "consultationUpdates", "Trial Expired",
+        "Your free trial has ended. Pay to continue your consultation.",
+        { type: "trial_expired", consultationId: trial.id }
+      );
+    }
+
+    if (staleTrials.length > 0) {
+      console.log(`[TrialCleanup] Sent expired notifications for ${staleTrials.length} stale TRIAL consultation(s)`);
+    }
+  } catch (err) {
+    console.error("[TrialCleanup] Error:", err.message);
+  }
+}

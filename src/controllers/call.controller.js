@@ -338,3 +338,22 @@ export const getCallToken = asyncHandler(async (req, res) => {
     },
   });
 });
+
+// ─── Startup cleanup: mark stale RINGING calls as MISSED ───
+export async function cleanupStaleCalls() {
+  try {
+    const oneMinuteAgo = new Date(Date.now() - 60_000);
+    const { count } = await prisma.call.updateMany({
+      where: {
+        status: "RINGING",
+        createdAt: { lt: oneMinuteAgo },
+      },
+      data: { status: "MISSED" },
+    });
+    if (count > 0) {
+      console.log(`[CallCleanup] Marked ${count} stale RINGING call(s) as MISSED`);
+    }
+  } catch (err) {
+    console.error("[CallCleanup] Error:", err.message);
+  }
+}
