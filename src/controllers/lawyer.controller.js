@@ -1,5 +1,6 @@
 import asyncHandler from "express-async-handler";
 import prisma from "../lib/prisma.js";
+import cloudinary from "../config/cloudinary.js";
 import { notifyProfileViewed } from "../services/notification.service.js";
 
 // @desc    Create lawyer profile
@@ -317,9 +318,16 @@ export const uploadProfilePhoto = asyncHandler(async (req, res) => {
     throw new Error("No photo provided");
   }
 
+  // Upload to Cloudinary instead of storing raw base64 in database
+  const result = await cloudinary.uploader.upload(photo, {
+    folder: "lawyer-direct/profile-photos",
+    width: 400,
+    crop: "scale",
+  });
+
   const profile = await prisma.lawyerProfile.update({
     where: { userId: req.user.id },
-    data: { profilePhoto: photo },
+    data: { profilePhoto: result.secure_url },
     select: { id: true, profilePhoto: true },
   });
 

@@ -34,10 +34,7 @@ export const uploadFile = asyncHandler(async (req, res) => {
     throw new Error("Not authorized to upload files to this consultation");
   }
 
-  if (["COMPLETED", "CANCELLED"].includes(consultation.status)) {
-    res.status(400);
-    throw new Error("Consultation has ended");
-  }
+  // Allow file uploads on ended consultations so parties can still share files
 
   // Determine message type from mimeType
   const isImage = mimeType && mimeType.startsWith("image/");

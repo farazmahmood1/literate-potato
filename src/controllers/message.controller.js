@@ -89,10 +89,7 @@ export const sendMessage = asyncHandler(async (req, res) => {
     throw new Error("Not authorized");
   }
 
-  if (["COMPLETED", "CANCELLED"].includes(consultation.status)) {
-    res.status(400);
-    throw new Error("Consultation has ended");
-  }
+  // Allow messages on ended consultations so parties can still communicate
 
   // Content moderation (text messages only)
   if (messageType === "TEXT") {

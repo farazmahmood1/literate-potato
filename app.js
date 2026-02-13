@@ -35,9 +35,7 @@ const app = express();
 
 // Middleware
 app.use(cors({
-  origin: process.env.NODE_ENV === "production"
-    ? process.env.CLIENT_URL
-    : true, // Allow all origins in development (mobile, web, etc.)
+  origin: true, // Allow all origins (mobile apps + admin dashboard)
   credentials: true,
 }));
 app.use(express.json({ limit: "50mb" }));

@@ -960,18 +960,47 @@ export const getGeographicData = asyncHandler(async (req, res) => {
     `,
   ]);
 
+  // Normalize full state names to 2-letter abbreviations
+  const STATE_NAME_TO_ABBR = {
+    alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR",
+    california: "CA", colorado: "CO", connecticut: "CT", delaware: "DE",
+    florida: "FL", georgia: "GA", hawaii: "HI", idaho: "ID",
+    illinois: "IL", indiana: "IN", iowa: "IA", kansas: "KS",
+    kentucky: "KY", louisiana: "LA", maine: "ME", maryland: "MD",
+    massachusetts: "MA", michigan: "MI", minnesota: "MN", mississippi: "MS",
+    missouri: "MO", montana: "MT", nebraska: "NE", nevada: "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM",
+    "new york": "NY", "north carolina": "NC", "north dakota": "ND",
+    ohio: "OH", oklahoma: "OK", oregon: "OR", pennsylvania: "PA",
+    "rhode island": "RI", "south carolina": "SC", "south dakota": "SD",
+    tennessee: "TN", texas: "TX", utah: "UT", vermont: "VT",
+    virginia: "VA", washington: "WA", "west virginia": "WV",
+    wisconsin: "WI", wyoming: "WY", "district of columbia": "DC",
+  };
+
+  const normalizeState = (raw) => {
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    // Already a valid 2-letter code
+    if (/^[A-Z]{2}$/.test(trimmed)) return trimmed;
+    // Look up full name (case-insensitive)
+    return STATE_NAME_TO_ABBR[trimmed.toLowerCase()] || null;
+  };
+
   const stateMap = {};
 
   for (const row of clientsByState) {
-    const st = row.state;
+    const st = normalizeState(row.state);
+    if (!st) continue;
     if (!stateMap[st]) stateMap[st] = { clients: 0, lawyers: 0 };
-    stateMap[st].clients = Number(row.count);
+    stateMap[st].clients += Number(row.count);
   }
 
   for (const row of lawyersByState) {
-    const st = row.state;
+    const st = normalizeState(row.state);
+    if (!st) continue;
     if (!stateMap[st]) stateMap[st] = { clients: 0, lawyers: 0 };
-    stateMap[st].lawyers = Number(row.count);
+    stateMap[st].lawyers += Number(row.count);
   }
 
   res.json({ success: true, data: stateMap });

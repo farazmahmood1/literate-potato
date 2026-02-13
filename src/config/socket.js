@@ -9,9 +9,7 @@ let io;
 export function initSocket(httpServer) {
   io = new Server(httpServer, {
     cors: {
-      origin: process.env.NODE_ENV === "production"
-        ? process.env.CLIENT_URL
-        : "*",
+      origin: true, // Allow all origins (mobile apps don't have browser CORS risks)
       credentials: true,
     },
     pingTimeout: 60000,
@@ -89,10 +87,7 @@ export function initSocket(httpServer) {
           return socket.emit("error", { message: "Consultation not found" });
         }
 
-        // Block messages on ended consultations
-        if (["COMPLETED", "CANCELLED"].includes(consultation.status)) {
-          return socket.emit("error", { message: "Consultation has ended" });
-        }
+        // Allow messages on ended consultations so parties can still communicate
 
         // Block messages after trial expired (if no payment)
         if (
