@@ -62,12 +62,6 @@ export const initiateCall = asyncHandler(async (req, res) => {
     throw new Error("Not authorized to initiate a call in this consultation");
   }
 
-  // Only the client may initiate calls
-  if (!isClient) {
-    res.status(403);
-    throw new Error("Only the client can initiate calls");
-  }
-
   // Block calls on ended consultations
   if (["COMPLETED", "CANCELLED"].includes(consultation.status)) {
     res.status(400);

@@ -389,24 +389,18 @@ export const updateConsultationStatus = asyncHandler(async (req, res) => {
   // Emit status change to both participants
   try {
     const io = getIO();
-    io.to(`consultation:${consultation.id}`).emit("consultation-status-change", {
+    const payload = {
       consultationId: consultation.id,
       status: consultation.status,
       trialEndAt: consultation.trialEndAt,
-    });
+      changedBy: req.user.id,
+    };
+    io.to(`consultation:${consultation.id}`).emit("consultation-status-change", payload);
 
     // Also notify personal rooms
-    io.to(`user:${consultation.clientId}`).emit("consultation-status-change", {
-      consultationId: consultation.id,
-      status: consultation.status,
-      trialEndAt: consultation.trialEndAt,
-    });
+    io.to(`user:${consultation.clientId}`).emit("consultation-status-change", payload);
     if (consultation.lawyer?.user) {
-      io.to(`user:${consultation.lawyer.user.id}`).emit("consultation-status-change", {
-        consultationId: consultation.id,
-        status: consultation.status,
-        trialEndAt: consultation.trialEndAt,
-      });
+      io.to(`user:${consultation.lawyer.user.id}`).emit("consultation-status-change", payload);
     }
   } catch {}
 

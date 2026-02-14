@@ -215,10 +215,13 @@ model Message {
   fileName        String?
   fileSize        Int?
   mimeType        String?
+  replyToId       String?
   createdAt       DateTime    @default(now())
 
   consultation    Consultation @relation(fields: [consultationId], references: [id])
   sender          User         @relation("UserMessages", fields: [senderId], references: [id])
+  replyTo         Message?     @relation("MessageReplies", fields: [replyToId], references: [id])
+  replies         Message[]    @relation("MessageReplies")
 
   @@index([consultationId, createdAt])
   @@map("messages")
@@ -355,6 +358,7 @@ model JobPost {
   summary            String
   status             JobPostStatus @default(OPEN)
   lawyersNotified    Int           @default(0)
+  onlineLawyersCount Int           @default(0)
   acceptedByLawyerId String?
   consultationId     String?       @unique
   targetLawyerId     String?

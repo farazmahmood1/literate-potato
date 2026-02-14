@@ -121,7 +121,7 @@ export function initSocket(httpServer) {
     });
 
     // ─── Send a message ───
-    socket.on("send-message", async ({ consultationId, content, messageType = "TEXT" }) => {
+    socket.on("send-message", async ({ consultationId, content, messageType = "TEXT", replyToId }) => {
       try {
         const consultation = await prisma.consultation.findUnique({
           where: { id: consultationId },
@@ -169,9 +169,19 @@ export function initSocket(httpServer) {
             senderId: userId,
             content,
             messageType,
+            ...(replyToId ? { replyToId } : {}),
           },
           include: {
             sender: { select: { id: true, firstName: true, lastName: true, avatar: true } },
+            replyTo: {
+              select: {
+                id: true,
+                content: true,
+                senderId: true,
+                messageType: true,
+                sender: { select: { id: true, firstName: true, lastName: true } },
+              },
+            },
           },
         });
 

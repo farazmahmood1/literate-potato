@@ -63,7 +63,12 @@ export const createJobPost = asyncHandler(async (req, res) => {
     });
   }
 
-  // Create job post with 15min expiry — store lawyersNotified count
+  // Compute online count before creating
+  const onlineLawyersCount = lawyersToNotify.filter(
+    (l) => l.onlineStatus === "online"
+  ).length;
+
+  // Create job post with 15min expiry — store lawyersNotified count + onlineLawyersCount
   const jobPost = await prisma.jobPost.create({
     data: {
       clientId: req.user.id,
@@ -74,6 +79,7 @@ export const createJobPost = asyncHandler(async (req, res) => {
       summary: summary || description.substring(0, 300),
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       lawyersNotified: lawyersToNotify.length,
+      onlineLawyersCount,
       ...(targetLawyerId ? { targetLawyerId } : {}),
     },
     include: {
@@ -82,9 +88,6 @@ export const createJobPost = asyncHandler(async (req, res) => {
   });
 
   const clientName = `${jobPost.client.firstName || ""} ${jobPost.client.lastName || ""}`.trim() || "Client";
-  const onlineLawyersCount = lawyersToNotify.filter(
-    (l) => l.onlineStatus === "online"
-  ).length;
 
   const lawyersWithTokens = lawyersToNotify.filter((l) => l.user.expoPushToken);
   console.log(

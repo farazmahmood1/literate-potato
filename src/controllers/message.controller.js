@@ -41,6 +41,15 @@ export const getMessages = asyncHandler(async (req, res) => {
         sender: {
           select: { id: true, firstName: true, lastName: true, avatar: true },
         },
+        replyTo: {
+          select: {
+            id: true,
+            content: true,
+            senderId: true,
+            messageType: true,
+            sender: { select: { id: true, firstName: true, lastName: true } },
+          },
+        },
       },
       orderBy: { createdAt: "desc" },
       skip,
@@ -65,7 +74,7 @@ export const getMessages = asyncHandler(async (req, res) => {
 // @route   POST /api/consultations/:id/messages
 export const sendMessage = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { content, messageType = "TEXT" } = req.body;
+  const { content, messageType = "TEXT", replyToId } = req.body;
 
   if (!content || content.trim().length === 0) {
     res.status(400);
@@ -112,10 +121,20 @@ export const sendMessage = asyncHandler(async (req, res) => {
       senderId: req.user.id,
       content: content.trim(),
       messageType,
+      ...(replyToId ? { replyToId } : {}),
     },
     include: {
       sender: {
         select: { id: true, firstName: true, lastName: true, avatar: true },
+      },
+      replyTo: {
+        select: {
+          id: true,
+          content: true,
+          senderId: true,
+          messageType: true,
+          sender: { select: { id: true, firstName: true, lastName: true } },
+        },
       },
     },
   });
