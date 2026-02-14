@@ -358,6 +358,20 @@ export const updateConsultationStatus = asyncHandler(async (req, res) => {
     throw new Error("Consultation not found");
   }
 
+  // Already at the target status — return success (idempotent)
+  if (current.status === status) {
+    const existing = await prisma.consultation.findUnique({
+      where: { id: req.params.id },
+      include: {
+        client: { select: { id: true, firstName: true, lastName: true } },
+        lawyer: {
+          include: { user: { select: { id: true, firstName: true, lastName: true } } },
+        },
+      },
+    });
+    return res.json({ success: true, data: existing });
+  }
+
   const allowed = VALID_TRANSITIONS[current.status];
   if (allowed && !allowed.includes(status)) {
     res.status(400);

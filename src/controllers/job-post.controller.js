@@ -6,6 +6,7 @@ import {
   notifyJobPostAccepted,
   notifyConsultationAccepted,
   scheduleTrialNotifications,
+  createInAppNotification,
 } from "../services/notification.service.js";
 
 // @desc    Create a job post (broadcast to all lawyers, or targeted to one)
@@ -119,9 +120,19 @@ export const createJobPost = asyncHandler(async (req, res) => {
       console.warn("[JobPost] Socket emit error:", err?.message);
     }
 
-    // Push + in-app + email — only for non-busy lawyers
-    if (lawyer.onlineStatus !== "busy") {
+    // Targeted invites: always send full notifications (client specifically chose this lawyer)
+    // Broadcast: skip push/email for busy lawyers, but still create in-app notification
+    if (targetLawyerId || lawyer.onlineStatus !== "busy") {
       notifyNewJobPost(lawyer.user.id, clientName, category, state, jobPost.id);
+    } else {
+      // Busy lawyers on broadcast still get an in-app notification (visible after they finish)
+      createInAppNotification(
+        lawyer.user.id,
+        "new_job_post",
+        "New Job Post",
+        `${clientName} needs help with ${category} in ${state}. First 3 min free.`,
+        { jobPostId: jobPost.id, category, state }
+      );
     }
   }
 

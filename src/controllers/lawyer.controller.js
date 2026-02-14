@@ -325,11 +325,18 @@ export const uploadProfilePhoto = asyncHandler(async (req, res) => {
     crop: "scale",
   });
 
-  const profile = await prisma.lawyerProfile.update({
-    where: { userId: req.user.id },
-    data: { profilePhoto: result.secure_url },
-    select: { id: true, profilePhoto: true },
-  });
+  // Update both LawyerProfile.profilePhoto AND User.avatar so all screens stay in sync
+  const [profile] = await Promise.all([
+    prisma.lawyerProfile.update({
+      where: { userId: req.user.id },
+      data: { profilePhoto: result.secure_url },
+      select: { id: true, profilePhoto: true },
+    }),
+    prisma.user.update({
+      where: { id: req.user.id },
+      data: { avatar: result.secure_url },
+    }),
+  ]);
 
   res.json({ success: true, data: profile });
 });

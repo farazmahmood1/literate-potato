@@ -109,7 +109,9 @@ export const initiateCall = asyncHandler(async (req, res) => {
       callType: type,
       isVideo: type === "video",
     });
-  } catch {}
+  } catch (err) {
+    console.warn("[Call] Socket emit error:", err?.message);
+  }
 
   // Push notification for incoming call
   if (type === "video") {
