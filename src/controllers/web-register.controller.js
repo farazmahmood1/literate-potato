@@ -2,6 +2,7 @@ import asyncHandler from "express-async-handler";
 import { clerkClient } from "@clerk/express";
 import prisma from "../lib/prisma.js";
 import { getClientIp, getLocationFromIp } from "../services/geolocation.service.js";
+import { normalizeStateToAbbr } from "../utils/stateNormalize.js";
 
 // @desc    Register a new user from the portfolio website (no auth required)
 // @route   POST /api/web-register
@@ -95,7 +96,7 @@ export const webRegister = asyncHandler(async (req, res) => {
       avatar: clerkUser.imageUrl,
       role,
       isVerified: false,
-      registrationState: role === "LAWYER" ? licenseState : regState,
+      registrationState: role === "LAWYER" ? normalizeStateToAbbr(licenseState) || licenseState : regState,
       registrationCity: regCity,
       registrationIp: ip,
     },
@@ -107,7 +108,7 @@ export const webRegister = asyncHandler(async (req, res) => {
       data: {
         userId: user.id,
         barNumber,
-        licenseState,
+        licenseState: normalizeStateToAbbr(licenseState) || licenseState,
         title: title || null,
         specializations,
         consultationRate: consultationRate ? parseInt(consultationRate) : 3000,

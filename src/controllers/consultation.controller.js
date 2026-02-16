@@ -6,6 +6,7 @@ import { generateConsultationSummary } from "../services/summary.service.js";
 import {
   notifyConsultationCompleted,
   notifyConsultationCancelled,
+  notifyNewConsultation,
   cancelTrialNotifications,
   notifyNewReview,
   notifyRatingMilestone,
@@ -214,6 +215,19 @@ export const createConsultation = asyncHandler(async (req, res) => {
       io.to(`user:${consultation.lawyer.user.id}`).emit("new-message", firstMessage);
     } catch {}
   }
+
+  // Notify the lawyer about the new consultation via socket + push + in-app
+  try {
+    const io = getIO();
+    const clientName = `${consultation.client.firstName} ${consultation.client.lastName}`;
+    io.to(`user:${consultation.lawyer.user.id}`).emit("new-consultation", {
+      consultationId: consultation.id,
+      clientName,
+      category,
+    });
+
+    notifyNewConsultation(consultation.lawyer.user.id, clientName, category, consultation.id);
+  } catch {}
 
   res.status(201).json({ success: true, data: consultation });
 });

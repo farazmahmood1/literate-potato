@@ -26,6 +26,78 @@ const expo = new Expo();
 // ─── Active trial timers (keyed by consultationId) ───
 const trialTimers = new Map();
 
+// ─── Receipt verification queue ───
+// Expo push notifications are two-step: send → ticket, then check receipt.
+// We collect ticket IDs and periodically verify delivery.
+const pendingReceipts = []; // { ticketId, userId, title, retryCount }
+const RECEIPT_CHECK_INTERVAL_MS = 30_000; // 30 seconds
+const MAX_RECEIPT_RETRIES = 5;
+let receiptIntervalStarted = false;
+
+function startReceiptChecker() {
+  if (receiptIntervalStarted) return;
+  receiptIntervalStarted = true;
+
+  setInterval(async () => {
+    if (pendingReceipts.length === 0) return;
+
+    // Take up to 300 receipts per batch (Expo limit)
+    const batch = pendingReceipts.splice(0, 300);
+    const ticketIds = batch.map((r) => r.ticketId);
+
+    try {
+      const receiptResults = await expo.getPushNotificationReceiptsAsync(ticketIds);
+
+      for (const item of batch) {
+        const receipt = receiptResults[item.ticketId];
+        if (!receipt) {
+          // Receipt not yet available — re-queue if under retry limit
+          if (item.retryCount < MAX_RECEIPT_RETRIES) {
+            item.retryCount++;
+            pendingReceipts.push(item);
+          } else {
+            console.warn(`[Push] Receipt never available for ticket ${item.ticketId} (user ${item.userId}, "${item.title}")`);
+          }
+          continue;
+        }
+
+        if (receipt.status === "ok") {
+          // Successfully delivered
+          continue;
+        }
+
+        if (receipt.status === "error") {
+          console.error(
+            `[Push] Delivery failed for user ${item.userId}: ${receipt.message}`,
+            receipt.details ? JSON.stringify(receipt.details) : ""
+          );
+
+          // If the device is no longer registered, clear the stale token
+          if (receipt.details?.error === "DeviceNotRegistered") {
+            console.log(`[Push] Clearing stale token for user ${item.userId}`);
+            await prisma.user.update({
+              where: { id: item.userId },
+              data: { expoPushToken: null },
+            }).catch((e) => console.error("[Push] Failed to clear stale token:", e.message));
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[Push] Receipt check failed:", err.message);
+      // Put them all back for retry
+      for (const item of batch) {
+        if (item.retryCount < MAX_RECEIPT_RETRIES) {
+          item.retryCount++;
+          pendingReceipts.push(item);
+        }
+      }
+    }
+  }, RECEIPT_CHECK_INTERVAL_MS);
+}
+
+// Start receipt checker on module load
+startReceiptChecker();
+
 // ─────────────────────────────────────────────────────
 // In-app notification helper
 // ─────────────────────────────────────────────────────
@@ -66,10 +138,18 @@ export async function createInAppNotification(userId, type, title, body, data = 
 
 /**
  * Send a push notification to a specific Expo push token.
+ * Includes channelId for Android 8+, high priority for timely delivery,
+ * and queues receipt verification.
+ *
+ * @param {string} expoPushToken
+ * @param {string} title
+ * @param {string} body
+ * @param {object} data
+ * @param {string|null} userId - If provided, used for receipt tracking & stale token cleanup
  */
-export async function sendPushNotification(expoPushToken, title, body, data = {}) {
+export async function sendPushNotification(expoPushToken, title, body, data = {}, userId = null) {
   if (!Expo.isExpoPushToken(expoPushToken)) {
-    console.warn(`Invalid Expo push token: ${expoPushToken}`);
+    console.warn(`[Push] Invalid Expo push token: ${expoPushToken} (user ${userId})`);
     return null;
   }
 
@@ -81,13 +161,45 @@ export async function sendPushNotification(expoPushToken, title, body, data = {}
         title,
         body,
         data,
+        channelId: "default",  // Must match the channel created on the client
+        priority: "high",       // Ensures timely delivery on Android (bypasses Doze)
       },
     ];
 
     const tickets = await expo.sendPushNotificationsAsync(messages);
-    return tickets[0];
+    const ticket = tickets[0];
+
+    if (ticket.status === "error") {
+      console.error(
+        `[Push] Ticket error for user ${userId}: ${ticket.message}`,
+        ticket.details ? JSON.stringify(ticket.details) : ""
+      );
+
+      // If device is not registered, clear the stale token immediately
+      if (ticket.details?.error === "DeviceNotRegistered" && userId) {
+        console.log(`[Push] Clearing stale token for user ${userId} (DeviceNotRegistered at ticket stage)`);
+        await prisma.user.update({
+          where: { id: userId },
+          data: { expoPushToken: null },
+        }).catch((e) => console.error("[Push] Failed to clear stale token:", e.message));
+      }
+
+      return ticket;
+    }
+
+    // Queue receipt verification for successful tickets
+    if (ticket.id) {
+      pendingReceipts.push({
+        ticketId: ticket.id,
+        userId: userId || "unknown",
+        title,
+        retryCount: 0,
+      });
+    }
+
+    return ticket;
   } catch (err) {
-    console.error("Push notification failed:", err.message);
+    console.error(`[Push] Send failed for user ${userId}:`, err.message);
     return null;
   }
 }
@@ -102,11 +214,14 @@ export async function sendToUser(userId, title, body, data = {}) {
   });
 
   if (!user || !user.expoPushToken) {
-    console.log(`[Notification] No push token for user ${userId} — skipping push`);
+    // Only log in dev to reduce noise in production
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[Push] No push token for user ${userId} — skipping`);
+    }
     return null;
   }
 
-  return sendPushNotification(user.expoPushToken, title, body, data);
+  return sendPushNotification(user.expoPushToken, title, body, data, userId);
 }
 
 /**
@@ -142,7 +257,7 @@ export async function sendToUserIfAllowed(userId, preferenceKey, title, body, da
     return null; // User has opted out
   }
 
-  return sendPushNotification(user.expoPushToken, title, body, data);
+  return sendPushNotification(user.expoPushToken, title, body, data, userId);
 }
 
 // ─────────────────────────────────────────────────────
@@ -680,6 +795,26 @@ export function notifyJobPostAccepted(clientUserId, lawyerName, jobPostId, consu
   createInAppNotification(clientUserId, "job_post_accepted", "Job Post Accepted",
     `Attorney ${lawyerName} has accepted your job post. A 3-minute free trial has started.`,
     { jobPostId, consultationId }
+  );
+}
+
+// ─────────────────────────────────────────────────────
+// New consultation notifications
+// ─────────────────────────────────────────────────────
+
+/**
+ * Notify a lawyer that a new consultation request was created.
+ */
+export function notifyNewConsultation(lawyerUserId, clientName, category, consultationId) {
+  sendToUserIfAllowed(lawyerUserId, "consultationUpdates", "New Consultation Request",
+    `${clientName} is requesting help with ${category}.`,
+    { type: "new_consultation", consultationId, category }
+  );
+
+  // In-app
+  createInAppNotification(lawyerUserId, "new_consultation", "New Consultation Request",
+    `${clientName} is requesting help with ${category}.`,
+    { consultationId, category }
   );
 }
 

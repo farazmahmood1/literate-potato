@@ -181,3 +181,24 @@ export const markAsRead = asyncHandler(async (req, res) => {
 
   res.json({ success: true });
 });
+
+// @desc    Get total unread message count across all user's consultations
+// @route   GET /api/consultations/unread-message-count
+export const getUnreadCount = asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+
+  const count = await prisma.message.count({
+    where: {
+      senderId: { not: userId },
+      isRead: false,
+      consultation: {
+        OR: [
+          { clientId: userId },
+          { lawyer: { userId } },
+        ],
+      },
+    },
+  });
+
+  res.json({ success: true, data: { unreadCount: count } });
+});

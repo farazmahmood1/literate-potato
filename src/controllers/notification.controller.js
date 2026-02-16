@@ -1,22 +1,27 @@
 import asyncHandler from "express-async-handler";
 import prisma from "../lib/prisma.js";
 
-// @desc    Register/update push notification token
+// @desc    Register/update/clear push notification token
 // @route   POST /api/notifications/token
+// Accepts { token: "ExponentPushToken[...]" } to register,
+// or { token: null } to clear (e.g., on sign-out).
 export const registerPushToken = asyncHandler(async (req, res) => {
   const { token } = req.body;
 
-  if (!token) {
+  // Allow null to clear the token on sign-out
+  if (token === undefined) {
     res.status(400);
-    throw new Error("Push token is required");
+    throw new Error("Push token is required (send null to clear)");
   }
 
   await prisma.user.update({
     where: { id: req.user.id },
-    data: { expoPushToken: token },
+    data: { expoPushToken: token || null },
   });
 
-  res.json({ success: true, message: "Push token registered" });
+  const action = token ? "registered" : "cleared";
+  console.log(`[Push] Token ${action} for user ${req.user.id}`);
+  res.json({ success: true, message: `Push token ${action}` });
 });
 
 // @desc    Get notification preferences

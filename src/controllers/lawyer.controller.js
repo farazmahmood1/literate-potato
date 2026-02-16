@@ -2,6 +2,7 @@ import asyncHandler from "express-async-handler";
 import prisma from "../lib/prisma.js";
 import cloudinary from "../config/cloudinary.js";
 import { notifyProfileViewed } from "../services/notification.service.js";
+import { normalizeStateToAbbr } from "../utils/stateNormalize.js";
 
 // @desc    Create lawyer profile
 // @route   POST /api/lawyers/profile
@@ -26,7 +27,7 @@ export const createLawyerProfile = asyncHandler(async (req, res) => {
     data: {
       userId: req.user.id,
       barNumber,
-      licenseState,
+      licenseState: normalizeStateToAbbr(licenseState) || licenseState,
       specializations: specializations || [],
       bio,
       yearsExperience,

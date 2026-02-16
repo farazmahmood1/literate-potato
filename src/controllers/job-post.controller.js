@@ -8,6 +8,7 @@ import {
   scheduleTrialNotifications,
   createInAppNotification,
 } from "../services/notification.service.js";
+import { getStateVariants, stateMatchesLicenseState } from "../utils/stateNormalize.js";
 
 // @desc    Create a job post (broadcast to all lawyers, or targeted to one)
 // @route   POST /api/job-posts
@@ -53,10 +54,12 @@ export const createJobPost = asyncHandler(async (req, res) => {
     // Broadcast — find ALL verified lawyers licensed in the job post's state.
     // All lawyers (online, offline, busy) see job posts on their dashboard.
     // Notification filtering (skip push/in-app for busy) happens in the loop below.
+    // Uses state variant matching to handle abbreviation ↔ full name mismatch
+    // (e.g. job state "CA" must match lawyer licenseState "California").
     lawyersToNotify = await prisma.lawyerProfile.findMany({
       where: {
         verificationStatus: "VERIFIED",
-        ...(state ? { licenseState: state } : {}),
+        ...stateMatchesLicenseState(state),
       },
       include: {
         user: { select: { id: true, expoPushToken: true } },
@@ -166,21 +169,42 @@ export const getJobPosts = asyncHandler(async (req, res) => {
       ? { NOT: { views: { some: { lawyerId: lawyerProfile.id, declined: true } } } }
       : {};
 
-    const stateFilter = {
-      ...(status !== "all" && { status }),
-      ...(lawyerProfile?.licenseState && { state: lawyerProfile.licenseState }),
-      ...declinedFilter,
-    };
+    // Build state-matching conditions using variants to handle
+    // abbreviation ↔ full name mismatch (e.g. licenseState "California"
+    // must match job posts with state "CA" and vice versa).
+    const stateVariants = lawyerProfile?.licenseState
+      ? getStateVariants(lawyerProfile.licenseState)
+      : [];
 
+    const statusFilter = status !== "all" ? { status } : {};
+
+    // Each state variant becomes its own OR branch so we can use
+    // case-insensitive equals (Prisma doesn't support mode on `in`).
+    // Also restrict to broadcast posts (targetLawyerId: null) so lawyers
+    // don't see targeted invites meant for other lawyers in the same state.
+    const stateConditions = stateVariants.length > 0
+      ? stateVariants.map((v) => ({
+          ...statusFilter,
+          state: { equals: v, mode: "insensitive" },
+          targetLawyerId: null,
+          ...declinedFilter,
+        }))
+      : [{ ...statusFilter, targetLawyerId: null, ...declinedFilter }];
+
+    // Targeted posts: posts specifically addressed to this lawyer (any state)
     const targetedFilter = {
       targetLawyerId: lawyerProfile?.id,
-      ...(status !== "all" && { status }),
+      ...statusFilter,
       ...declinedFilter,
     };
 
     where = {
-      OR: [stateFilter, targetedFilter],
+      OR: [...stateConditions, targetedFilter],
     };
+
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[JobPost GET] lawyer=${req.user.id}, licenseState=${lawyerProfile?.licenseState}, variants=${JSON.stringify(stateVariants)}`);
+    }
   } else {
     // Clients see their own job posts
     where = {
@@ -210,6 +234,10 @@ export const getJobPosts = asyncHandler(async (req, res) => {
     }),
     prisma.jobPost.count({ where }),
   ]);
+
+  if (process.env.NODE_ENV !== "production" && req.user.role === "LAWYER") {
+    console.log(`[JobPost GET] Found ${total} job posts (returned ${jobPosts.length})`);
+  }
 
   // Track views for LAWYER users viewing OPEN posts
   if (req.user.role === "LAWYER" && jobPosts.length > 0) {
@@ -453,7 +481,7 @@ export const acceptJobPost = asyncHandler(async (req, res) => {
     const lawyersInState = await prisma.lawyerProfile.findMany({
       where: {
         verificationStatus: "VERIFIED",
-        ...(jobPost.state ? { licenseState: jobPost.state } : {}),
+        ...stateMatchesLicenseState(jobPost.state),
       },
       select: { userId: true },
     });
@@ -561,7 +589,7 @@ export const closeJobPost = asyncHandler(async (req, res) => {
     const lawyersInState = await prisma.lawyerProfile.findMany({
       where: {
         verificationStatus: "VERIFIED",
-        ...(jobPost.state ? { licenseState: jobPost.state } : {}),
+        ...stateMatchesLicenseState(jobPost.state),
       },
       select: { userId: true },
     });
@@ -609,7 +637,7 @@ export const deleteJobPost = asyncHandler(async (req, res) => {
       const lawyersInState = await prisma.lawyerProfile.findMany({
         where: {
           verificationStatus: "VERIFIED",
-          ...(jobPost.state ? { licenseState: jobPost.state } : {}),
+          ...stateMatchesLicenseState(jobPost.state),
         },
         select: { userId: true },
       });
@@ -662,7 +690,7 @@ export function startJobPostExpiryTask() {
             const lawyers = await prisma.lawyerProfile.findMany({
               where: {
                 verificationStatus: "VERIFIED",
-                ...(post.state ? { licenseState: post.state } : {}),
+                ...stateMatchesLicenseState(post.state),
               },
               select: { userId: true },
             });

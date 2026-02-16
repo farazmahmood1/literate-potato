@@ -55,7 +55,7 @@ const seed = async () => {
     data: {
       userId: lawyerUser1.id,
       barNumber: "NY-2019-48291",
-      licenseState: "New York",
+      licenseState: "NY",
       specializations: ["Family Law", "Real Estate"],
       bio: "Board-certified family law specialist with 12 years of experience handling complex divorce and custody cases.",
       yearsExperience: 12,
@@ -82,7 +82,7 @@ const seed = async () => {
     data: {
       userId: lawyerUser2.id,
       barNumber: "CA-2015-77312",
-      licenseState: "California",
+      licenseState: "CA",
       specializations: ["Business & Contract", "Intellectual Property"],
       bio: "Former tech industry counsel specializing in startup formation, IP protection, and commercial agreements.",
       yearsExperience: 15,
@@ -109,7 +109,7 @@ const seed = async () => {
     data: {
       userId: lawyerUser3.id,
       barNumber: "TX-2012-33891",
-      licenseState: "Texas",
+      licenseState: "TX",
       specializations: ["Immigration", "Criminal Defense"],
       bio: "Passionate immigration attorney helping families navigate visas, green cards, and citizenship applications.",
       yearsExperience: 18,

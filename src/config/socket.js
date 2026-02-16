@@ -229,7 +229,7 @@ export function initSocket(httpServer) {
     // ─── Read receipts ───
     socket.on("read-receipt", async ({ consultationId }) => {
       try {
-        await prisma.message.updateMany({
+        const result = await prisma.message.updateMany({
           where: {
             consultationId,
             senderId: { not: userId },
@@ -242,6 +242,23 @@ export function initSocket(httpServer) {
           consultationId,
           readBy: userId,
         });
+
+        // Emit updated total unread count back to the reader for badge sync
+        if (result.count > 0) {
+          const totalUnread = await prisma.message.count({
+            where: {
+              senderId: { not: userId },
+              isRead: false,
+              consultation: {
+                OR: [
+                  { clientId: userId },
+                  { lawyer: { userId } },
+                ],
+              },
+            },
+          });
+          socket.emit("unread-message-count", { count: totalUnread });
+        }
       } catch (err) {
         // Silent fail for read receipts
       }
