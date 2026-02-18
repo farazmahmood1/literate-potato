@@ -57,6 +57,8 @@ app.use("/api/tracking", trackingRoutes);
 // Career routes — public, no auth (for portfolio website)
 app.use("/api/careers", careerRoutes);
 
+
+
 app.use(clerk);
 
 // Health check
