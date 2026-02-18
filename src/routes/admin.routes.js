@@ -18,6 +18,11 @@ import {
   getRecentSignups,
   sendBroadcastNotification,
   getBroadcastHistory,
+  getNotificationStats,
+  getAllNotifications,
+  deleteBroadcast,
+  resendBroadcast,
+  deleteAdminNotification,
   getAnalytics,
   getCalendarData,
   getTodos,
@@ -27,6 +32,9 @@ import {
   getGeographicData,
   getTopLawyers,
   getVisitorStats,
+  getAdminReviews,
+  approveReview,
+  rejectReview,
 } from "../controllers/admin.controller.js";
 import {
   getAdminTickets,
@@ -34,6 +42,15 @@ import {
   adminReply,
   updateTicketStatus,
 } from "../controllers/admin-ticket.controller.js";
+import {
+  getCareerPostings,
+  getCareerPosting,
+  createCareerPosting,
+  updateCareerPosting,
+  deleteCareerPosting,
+  getApplications,
+  deleteApplication,
+} from "../controllers/career.controller.js";
 
 const router = Router();
 
@@ -61,8 +78,13 @@ router.get("/tickets/:id", getAdminTicket);
 router.post("/tickets/:id/replies", adminReply);
 router.put("/tickets/:id/status", updateTicketStatus);
 router.get("/signups", getRecentSignups);
+router.get("/notifications/stats", getNotificationStats);
+router.get("/notifications/all", getAllNotifications);
 router.post("/notifications/broadcast", sendBroadcastNotification);
 router.get("/notifications/broadcast", getBroadcastHistory);
+router.delete("/notifications/broadcast/:id", deleteBroadcast);
+router.post("/notifications/broadcast/:id/resend", resendBroadcast);
+router.delete("/notifications/:id", deleteAdminNotification);
 router.get("/analytics", getAnalytics);
 router.get("/calendar", getCalendarData);
 router.get("/todos", getTodos);
@@ -72,5 +94,15 @@ router.delete("/todos/:id", deleteTodo);
 router.get("/geography", getGeographicData);
 router.get("/top-lawyers", getTopLawyers);
 router.get("/visitors", getVisitorStats);
+router.get("/reviews", getAdminReviews);
+router.put("/reviews/:id/approve", approveReview);
+router.put("/reviews/:id/reject", rejectReview);
+router.get("/careers", getCareerPostings);
+router.get("/careers/:id", getCareerPosting);
+router.post("/careers", createCareerPosting);
+router.put("/careers/:id", updateCareerPosting);
+router.delete("/careers/:id", deleteCareerPosting);
+router.get("/careers/:id/applications", getApplications);
+router.delete("/careers/applications/:id", deleteApplication);
 
 export default router;

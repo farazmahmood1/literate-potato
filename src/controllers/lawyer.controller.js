@@ -151,6 +151,7 @@ export const getLawyer = asyncHandler(async (req, res) => {
     include: {
       user: { select: { firstName: true, lastName: true, avatar: true } },
       reviews: {
+        where: { status: "APPROVED" },
         include: { reviewer: { select: { firstName: true, lastName: true } } },
         orderBy: { createdAt: "desc" },
         take: 5,
@@ -248,7 +249,7 @@ export const getLawyerReviews = asyncHandler(async (req, res) => {
 
   const [reviews, total] = await Promise.all([
     prisma.review.findMany({
-      where: { lawyerProfileId },
+      where: { lawyerProfileId, status: "APPROVED" },
       include: {
         reviewer: { select: { firstName: true, lastName: true } },
       },
@@ -256,7 +257,7 @@ export const getLawyerReviews = asyncHandler(async (req, res) => {
       skip,
       take: Number(limit),
     }),
-    prisma.review.count({ where: { lawyerProfileId } }),
+    prisma.review.count({ where: { lawyerProfileId, status: "APPROVED" } }),
   ]);
 
   res.json({

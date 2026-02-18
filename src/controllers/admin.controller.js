@@ -6,6 +6,8 @@ import {
   notifyDisputeResolved,
   sendPushNotification,
   createInAppNotification,
+  notifyNewReview,
+  notifyRatingMilestone,
 } from "../services/notification.service.js";
 import { issueStripeRefund } from "../services/refund.service.js";
 
@@ -216,10 +218,28 @@ export const verifyLawyer = asyncHandler(async (req, res) => {
 // @desc    Get all consultations (paginated)
 // @route   GET /api/admin/consultations
 export const getConsultations = asyncHandler(async (req, res) => {
-  const { status, category, page = 1, limit = 20 } = req.query;
+  const { status, category, search, from, to, page = 1, limit = 20 } = req.query;
   const where = {};
   if (status) where.status = status;
   if (category) where.category = category;
+  if (from || to) {
+    where.createdAt = {};
+    if (from) where.createdAt.gte = new Date(from);
+    if (to) {
+      const toDate = new Date(to);
+      toDate.setHours(23, 59, 59, 999);
+      where.createdAt.lte = toDate;
+    }
+  }
+  if (search) {
+    const term = { contains: search, mode: "insensitive" };
+    where.OR = [
+      { client: { firstName: term } },
+      { client: { lastName: term } },
+      { lawyer: { user: { firstName: term } } },
+      { lawyer: { user: { lastName: term } } },
+    ];
+  }
 
   const skip = (Number(page) - 1) * Number(limit);
   const [consultations, total] = await Promise.all([
@@ -1151,4 +1171,362 @@ export const getVisitorStats = asyncHandler(async (req, res) => {
       tablet: { visitors: deviceMap.tablet.visitors, sessions: deviceMap.tablet.sessions },
     },
   });
+});
+
+// ─── Review Moderation ───────────────────────────────────────────────
+
+// @desc    Get all reviews (paginated, filterable)
+// @route   GET /api/admin/reviews
+export const getAdminReviews = asyncHandler(async (req, res) => {
+  const { status, rating, search, page = 1, limit = 20 } = req.query;
+  const where = {};
+
+  if (status) where.status = status;
+  if (rating) where.rating = Number(rating);
+
+  if (search) {
+    where.OR = [
+      { reviewer: { OR: [
+        { firstName: { contains: search, mode: "insensitive" } },
+        { lastName: { contains: search, mode: "insensitive" } },
+      ]}},
+      { lawyerProfile: { user: { OR: [
+        { firstName: { contains: search, mode: "insensitive" } },
+        { lastName: { contains: search, mode: "insensitive" } },
+      ]}}},
+      { comment: { contains: search, mode: "insensitive" } },
+    ];
+  }
+
+  const skip = (Number(page) - 1) * Number(limit);
+  const [reviews, total] = await Promise.all([
+    prisma.review.findMany({
+      where,
+      include: {
+        reviewer: { select: { firstName: true, lastName: true, email: true } },
+        lawyerProfile: {
+          select: {
+            id: true,
+            user: { select: { firstName: true, lastName: true } },
+          },
+        },
+        consultation: { select: { id: true, category: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: Number(limit),
+    }),
+    prisma.review.count({ where }),
+  ]);
+
+  res.json({
+    success: true,
+    data: reviews,
+    pagination: { page: Number(page), limit: Number(limit), total, pages: Math.ceil(total / Number(limit)) },
+  });
+});
+
+// @desc    Approve a review
+// @route   PUT /api/admin/reviews/:id/approve
+export const approveReview = asyncHandler(async (req, res) => {
+  const review = await prisma.review.findUnique({
+    where: { id: req.params.id },
+    include: {
+      lawyerProfile: { include: { user: { select: { id: true } } } },
+      reviewer: { select: { firstName: true, lastName: true } },
+    },
+  });
+
+  if (!review) {
+    res.status(404);
+    throw new Error("Review not found");
+  }
+
+  if (review.status !== "PENDING") {
+    res.status(400);
+    throw new Error(`Review is already ${review.status}`);
+  }
+
+  const updated = await prisma.review.update({
+    where: { id: req.params.id },
+    data: { status: "APPROVED", reviewedAt: new Date() },
+    include: {
+      reviewer: { select: { firstName: true, lastName: true, email: true } },
+      lawyerProfile: {
+        select: {
+          id: true,
+          user: { select: { firstName: true, lastName: true } },
+        },
+      },
+      consultation: { select: { id: true, category: true } },
+    },
+  });
+
+  // Recalculate lawyer rating from APPROVED reviews only
+  const agg = await prisma.review.aggregate({
+    where: { lawyerProfileId: review.lawyerProfileId, status: "APPROVED" },
+    _avg: { rating: true },
+    _count: true,
+  });
+
+  await prisma.lawyerProfile.update({
+    where: { id: review.lawyerProfileId },
+    data: {
+      rating: agg._avg.rating || 0,
+      totalReviews: agg._count,
+    },
+  });
+
+  // Notify the lawyer (deferred from review creation)
+  const reviewerName = `${review.reviewer.firstName} ${review.reviewer.lastName}`;
+  notifyNewReview(
+    review.lawyerProfile.user.id,
+    reviewerName,
+    review.rating,
+    review.consultationId,
+    review.comment
+  );
+
+  // Check five-star milestone
+  if (review.rating === 5) {
+    const fiveStarCount = await prisma.review.count({
+      where: { lawyerProfileId: review.lawyerProfileId, rating: 5, status: "APPROVED" },
+    });
+    if (fiveStarCount > 0 && fiveStarCount % 10 === 0) {
+      notifyRatingMilestone(review.lawyerProfile.user.id, fiveStarCount);
+    }
+  }
+
+  res.json({ success: true, data: updated });
+});
+
+// @desc    Reject a review
+// @route   PUT /api/admin/reviews/:id/reject
+export const rejectReview = asyncHandler(async (req, res) => {
+  const { reason } = req.body;
+
+  const review = await prisma.review.findUnique({
+    where: { id: req.params.id },
+  });
+
+  if (!review) {
+    res.status(404);
+    throw new Error("Review not found");
+  }
+
+  if (review.status !== "PENDING") {
+    res.status(400);
+    throw new Error(`Review is already ${review.status}`);
+  }
+
+  const updated = await prisma.review.update({
+    where: { id: req.params.id },
+    data: {
+      status: "REJECTED",
+      rejectionReason: reason || null,
+      reviewedAt: new Date(),
+    },
+    include: {
+      reviewer: { select: { firstName: true, lastName: true, email: true } },
+      lawyerProfile: {
+        select: {
+          id: true,
+          user: { select: { firstName: true, lastName: true } },
+        },
+      },
+      consultation: { select: { id: true, category: true } },
+    },
+  });
+
+  res.json({ success: true, data: updated });
+});
+
+// ──── Enhanced Notification Management ────
+
+// @desc    Get notification statistics for admin dashboard
+// @route   GET /api/admin/notifications/stats
+export const getNotificationStats = asyncHandler(async (req, res) => {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekStart = new Date(todayStart);
+  weekStart.setDate(weekStart.getDate() - 7);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const [
+    totalBroadcasts,
+    broadcastsThisMonth,
+    totalNotifications,
+    unreadNotifications,
+    notificationsToday,
+    notificationsThisWeek,
+    activePushTokens,
+    totalUsers,
+  ] = await Promise.all([
+    prisma.adminBroadcast.count(),
+    prisma.adminBroadcast.count({ where: { createdAt: { gte: monthStart } } }),
+    prisma.notification.count(),
+    prisma.notification.count({ where: { read: false } }),
+    prisma.notification.count({ where: { createdAt: { gte: todayStart } } }),
+    prisma.notification.count({ where: { createdAt: { gte: weekStart } } }),
+    prisma.user.count({ where: { expoPushToken: { not: null } } }),
+    prisma.user.count(),
+  ]);
+
+  // Notifications grouped by type
+  const notificationsByType = await prisma.notification.groupBy({
+    by: ["type"],
+    _count: { type: true },
+    orderBy: { _count: { type: "desc" } },
+    take: 15,
+  });
+
+  // Total users reached (sum of sentCount across all broadcasts)
+  const totalReachedResult = await prisma.adminBroadcast.aggregate({
+    _sum: { sentCount: true },
+  });
+
+  res.json({
+    success: true,
+    data: {
+      totalBroadcasts,
+      broadcastsThisMonth,
+      totalNotifications,
+      unreadNotifications,
+      notificationsToday,
+      notificationsThisWeek,
+      activePushTokens,
+      totalUsers,
+      pushTokenRate: totalUsers > 0 ? Math.round((activePushTokens / totalUsers) * 100) : 0,
+      totalUsersReached: totalReachedResult._sum.sentCount || 0,
+      notificationsByType: notificationsByType.map((n) => ({
+        type: n.type,
+        count: n._count.type,
+      })),
+    },
+  });
+});
+
+// @desc    Get all user notifications (admin view)
+// @route   GET /api/admin/notifications/all?page=1&limit=20&type=&userId=&unread=&search=
+export const getAllNotifications = asyncHandler(async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 20));
+  const skip = (page - 1) * limit;
+
+  const where = {};
+
+  if (req.query.type) {
+    where.type = { startsWith: req.query.type };
+  }
+  if (req.query.userId) {
+    where.userId = req.query.userId;
+  }
+  if (req.query.unread === "true") {
+    where.read = false;
+  } else if (req.query.unread === "false") {
+    where.read = true;
+  }
+  if (req.query.search) {
+    where.OR = [
+      { title: { contains: req.query.search, mode: "insensitive" } },
+      { body: { contains: req.query.search, mode: "insensitive" } },
+    ];
+  }
+
+  const [notifications, total] = await Promise.all([
+    prisma.notification.findMany({
+      where,
+      include: {
+        user: {
+          select: { firstName: true, lastName: true, email: true, role: true },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.notification.count({ where }),
+  ]);
+
+  res.json({
+    success: true,
+    data: notifications,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+  });
+});
+
+// @desc    Delete a broadcast record
+// @route   DELETE /api/admin/notifications/broadcast/:id
+export const deleteBroadcast = asyncHandler(async (req, res) => {
+  const broadcast = await prisma.adminBroadcast.findUnique({
+    where: { id: req.params.id },
+  });
+
+  if (!broadcast) {
+    res.status(404);
+    throw new Error("Broadcast not found");
+  }
+
+  await prisma.adminBroadcast.delete({ where: { id: req.params.id } });
+
+  res.json({ success: true, message: "Broadcast deleted" });
+});
+
+// @desc    Resend a previous broadcast
+// @route   POST /api/admin/notifications/broadcast/:id/resend
+export const resendBroadcast = asyncHandler(async (req, res) => {
+  const broadcast = await prisma.adminBroadcast.findUnique({
+    where: { id: req.params.id },
+  });
+
+  if (!broadcast) {
+    res.status(404);
+    throw new Error("Broadcast not found");
+  }
+
+  const { title, body, target } = broadcast;
+
+  // Find matching users
+  const userWhere = {};
+  if (target === "CLIENTS") userWhere.role = "CLIENT";
+  if (target === "LAWYERS") userWhere.role = "LAWYER";
+
+  const users = await prisma.user.findMany({
+    where: userWhere,
+    select: { id: true, expoPushToken: true },
+  });
+
+  let sentCount = 0;
+
+  for (const user of users) {
+    await createInAppNotification(user.id, "admin_broadcast", title, body, { target });
+    if (user.expoPushToken) {
+      await sendPushNotification(user.expoPushToken, title, body, { type: "admin_broadcast" });
+      sentCount++;
+    }
+  }
+
+  // Save new broadcast record
+  const newBroadcast = await prisma.adminBroadcast.create({
+    data: { title, body, target, sentBy: "admin", sentCount },
+  });
+
+  res.status(201).json({ success: true, data: newBroadcast });
+});
+
+// @desc    Delete a user notification (admin)
+// @route   DELETE /api/admin/notifications/:id
+export const deleteAdminNotification = asyncHandler(async (req, res) => {
+  const notification = await prisma.notification.findUnique({
+    where: { id: req.params.id },
+  });
+
+  if (!notification) {
+    res.status(404);
+    throw new Error("Notification not found");
+  }
+
+  await prisma.notification.delete({ where: { id: req.params.id } });
+
+  res.json({ success: true, message: "Notification deleted" });
 });

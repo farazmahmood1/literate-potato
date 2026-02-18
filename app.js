@@ -29,6 +29,7 @@ import disputeRoutes from "./src/routes/dispute.routes.js";
 import ticketRoutes from "./src/routes/ticket.routes.js";
 import webRegisterRoutes from "./src/routes/web-register.routes.js";
 import trackingRoutes from "./src/routes/tracking.routes.js";
+import careerRoutes from "./src/routes/career.routes.js";
 import { errorHandler, notFound } from "./src/middlewares/error.middleware.js";
 
 const app = express();
@@ -52,6 +53,9 @@ app.use("/api/admin", adminRoutes);
 
 // Tracking routes — public, no auth
 app.use("/api/tracking", trackingRoutes);
+
+// Career routes — public, no auth (for portfolio website)
+app.use("/api/careers", careerRoutes);
 
 app.use(clerk);
 

@@ -481,42 +481,9 @@ export const addReview = asyncHandler(async (req, res) => {
       lawyerProfileId: consultation.lawyerId,
       rating,
       comment,
+      // status defaults to PENDING — rating update and notifications deferred until admin approval
     },
   });
-
-  // Update lawyer average rating
-  const reviews = await prisma.review.aggregate({
-    where: { lawyerProfileId: consultation.lawyerId },
-    _avg: { rating: true },
-    _count: true,
-  });
-
-  const lawyerProfile = await prisma.lawyerProfile.update({
-    where: { id: consultation.lawyerId },
-    data: {
-      rating: reviews._avg.rating || 0,
-      totalReviews: reviews._count,
-    },
-    include: { user: { select: { id: true } } },
-  });
-
-  // Get reviewer name for notification
-  const reviewer = await prisma.user.findUnique({
-    where: { id: req.user.id },
-    select: { firstName: true, lastName: true },
-  });
-  const reviewerName = reviewer ? `${reviewer.firstName} ${reviewer.lastName}` : "A client";
-  notifyNewReview(lawyerProfile.user.id, reviewerName, rating, consultation.id);
-
-  // Check for five-star milestone (every 10 five-star reviews)
-  if (rating === 5) {
-    const fiveStarCount = await prisma.review.count({
-      where: { lawyerProfileId: consultation.lawyerId, rating: 5 },
-    });
-    if (fiveStarCount > 0 && fiveStarCount % 10 === 0) {
-      notifyRatingMilestone(lawyerProfile.user.id, fiveStarCount);
-    }
-  }
 
   res.status(201).json({ success: true, data: review });
 });

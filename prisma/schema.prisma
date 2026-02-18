@@ -57,6 +57,12 @@ enum ReportStatus {
   DISMISSED
 }
 
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum DisputeStatus {
   OPEN
   LAWYER_RESPONSE
@@ -250,12 +256,16 @@ model Review {
   lawyerProfileId String
   rating          Int
   comment         String?
+  status          ReviewStatus  @default(PENDING)
+  rejectionReason String?
+  reviewedAt      DateTime?
   createdAt       DateTime      @default(now())
 
   consultation    Consultation  @relation(fields: [consultationId], references: [id])
   reviewer        User          @relation(fields: [reviewerId], references: [id])
   lawyerProfile   LawyerProfile @relation(fields: [lawyerProfileId], references: [id])
 
+  @@index([status])
   @@map("reviews")
 }
 
@@ -592,4 +602,58 @@ model TicketReply {
 
   @@index([ticketId, createdAt])
   @@map("ticket_replies")
+}
+
+// ── Career Postings (Admin-managed job postings for the company) ──
+
+enum CareerPostingStatus {
+  ACTIVE
+  CLOSED
+  DRAFT
+}
+
+enum CareerEmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  INTERNSHIP
+  REMOTE
+}
+
+model CareerPosting {
+  id               String               @id @default(uuid())
+  title            String
+  department       String
+  location         String
+  employmentType   CareerEmploymentType @default(FULL_TIME)
+  description      String               @db.Text
+  requirements     String               @db.Text
+  salaryMin        Int?                 // annual salary in USD
+  salaryMax        Int?
+  status           CareerPostingStatus  @default(DRAFT)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  applications     CareerApplication[]
+
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@map("career_postings")
+}
+
+model CareerApplication {
+  id              String   @id @default(uuid())
+  postingId       String
+  fullName        String
+  email           String
+  phone           String?
+  resumeUrl       String?
+  coverLetter     String?  @db.Text
+  linkedInUrl     String?
+  createdAt       DateTime @default(now())
+
+  posting         CareerPosting @relation(fields: [postingId], references: [id], onDelete: Cascade)
+
+  @@index([postingId, createdAt(sort: Desc)])
+  @@map("career_applications")
 }

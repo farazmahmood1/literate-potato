@@ -147,24 +147,29 @@ export async function createInAppNotification(userId, type, title, body, data = 
  * @param {object} data
  * @param {string|null} userId - If provided, used for receipt tracking & stale token cleanup
  */
-export async function sendPushNotification(expoPushToken, title, body, data = {}, userId = null) {
+export async function sendPushNotification(expoPushToken, title, body, data = {}, userId = null, badge = undefined) {
   if (!Expo.isExpoPushToken(expoPushToken)) {
     console.warn(`[Push] Invalid Expo push token: ${expoPushToken} (user ${userId})`);
     return null;
   }
 
   try {
-    const messages = [
-      {
-        to: expoPushToken,
-        sound: "default",
-        title,
-        body,
-        data,
-        channelId: "default",  // Must match the channel created on the client
-        priority: "high",       // Ensures timely delivery on Android (bypasses Doze)
-      },
-    ];
+    const message = {
+      to: expoPushToken,
+      sound: "default",
+      title,
+      body,
+      data,
+      channelId: "default",  // Must match the channel created on the client
+      priority: "high",       // Ensures timely delivery on Android (bypasses Doze)
+    };
+
+    // Include badge count so iOS updates the app icon badge on delivery
+    if (typeof badge === "number") {
+      message.badge = badge;
+    }
+
+    const messages = [message];
 
     const tickets = await expo.sendPushNotificationsAsync(messages);
     const ticket = tickets[0];
@@ -221,7 +226,12 @@ export async function sendToUser(userId, title, body, data = {}) {
     return null;
   }
 
-  return sendPushNotification(user.expoPushToken, title, body, data, userId);
+  // Query unread count for badge (non-blocking — default to undefined on failure)
+  const badge = await prisma.notification.count({
+    where: { userId, read: false },
+  }).catch(() => undefined);
+
+  return sendPushNotification(user.expoPushToken, title, body, data, userId, badge);
 }
 
 /**
@@ -257,7 +267,12 @@ export async function sendToUserIfAllowed(userId, preferenceKey, title, body, da
     return null; // User has opted out
   }
 
-  return sendPushNotification(user.expoPushToken, title, body, data, userId);
+  // Query unread count for badge (non-blocking — default to undefined on failure)
+  const badge = await prisma.notification.count({
+    where: { userId, read: false },
+  }).catch(() => undefined);
+
+  return sendPushNotification(user.expoPushToken, title, body, data, userId, badge);
 }
 
 // ─────────────────────────────────────────────────────
