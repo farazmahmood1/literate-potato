@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import compression from "compression";
 import cookieParser from "cookie-parser";
 import { clerk } from "./src/middlewares/auth.middleware.js";
 
@@ -30,6 +31,7 @@ import ticketRoutes from "./src/routes/ticket.routes.js";
 import webRegisterRoutes from "./src/routes/web-register.routes.js";
 import trackingRoutes from "./src/routes/tracking.routes.js";
 import careerRoutes from "./src/routes/career.routes.js";
+import { clerkWebhook } from "./src/controllers/auth.controller.js";
 import { errorHandler, notFound } from "./src/middlewares/error.middleware.js";
 
 const app = express();
@@ -39,6 +41,13 @@ app.use(cors({
   origin: true, // Allow all origins (mobile apps + admin dashboard)
   credentials: true,
 }));
+
+// Clerk webhook needs raw body for svix signature verification — register BEFORE JSON parser
+app.post("/api/auth/webhook", express.raw({ type: "application/json" }), clerkWebhook);
+
+// Gzip compression — reduces response sizes by ~70%
+app.use(compression());
+
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -48,6 +57,7 @@ app.get("/", (req, res) => {
   res.json({ success: true });
 });
 
+//hi
 // Admin routes registered BEFORE Clerk middleware (uses its own JWT auth)
 app.use("/api/admin", adminRoutes);
 
@@ -57,10 +67,15 @@ app.use("/api/tracking", trackingRoutes);
 // Career routes — public, no auth (for portfolio website)
 app.use("/api/careers", careerRoutes);
 
-
+// AI Profile routes — public, no auth (used during registration before Clerk session exists)
+app.use("/api/ai-profile", aiProfileRoutes);
 
 app.use(clerk);
 
+
+
+// hi this is testing github
+// Authenticated routes registered AFTER Clerk middleware
 // Health check
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
@@ -75,7 +90,6 @@ app.use("/api/consultations", messageRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/otp", otpRoutes);
 app.use("/api/dashboard", dashboardRoutes);
-app.use("/api/ai-profile", aiProfileRoutes);
 app.use("/api/lawyers", lawyerStatusRoutes);
 app.use("/api/payments", receiptRoutes);
 app.use("/api/consultations", summaryRouter);

@@ -2,17 +2,23 @@ import asyncHandler from "express-async-handler";
 import {
   extractProfileFromDocument,
   extractProfileFromText,
+  extractProfileFromUrl,
   extractProfileFromAudio,
-  fetchLinkedInContent,
+  fetchUrlContent,
+  fetchMultipleUrlsContent,
   generateProfileQuestion,
   detectStateFromBarNumber,
   transcribeAudio as transcribeAudioService,
-} from "../services/gemini.service.js";
+} from "../services/openai-profile.service.js";
 
-// @desc    Parse profile input (document, text, audio, LinkedIn) using AI
+// @desc    Parse profile input (document, text, audio, URL) using AI
 // @route   POST /api/ai-profile/parse
 export const parseProfileInput = asyncHandler(async (req, res) => {
-  const { file, audio, text, linkedinUrl } = req.body;
+  const body = req.body || {};
+  const { file, audio, text, url, linkedinUrl } = body;
+
+  // Support both 'url' (new) and 'linkedinUrl' (legacy) fields
+  const profileUrl = url || linkedinUrl;
 
   let extractedProfile = null;
 
@@ -20,13 +26,25 @@ export const parseProfileInput = asyncHandler(async (req, res) => {
     extractedProfile = await extractProfileFromDocument(file.base64, file.mimeType);
   } else if (audio && audio.base64 && audio.mimeType) {
     extractedProfile = await extractProfileFromAudio(audio.base64, audio.mimeType);
-  } else if (linkedinUrl) {
-    // Actually fetch the LinkedIn page and extract its content
-    const content = await fetchLinkedInContent(linkedinUrl);
+  } else if (profileUrl) {
+    // Detect multiple URLs (separated by whitespace, newlines, or commas)
+    const urls = profileUrl
+      .split(/[\s,]+/)
+      .map((u) => u.trim())
+      .filter((u) => u.startsWith("http://") || u.startsWith("https://"));
+
+    let content;
+    if (urls.length > 1) {
+      // Multiple URLs: scrape all and combine data
+      content = await fetchMultipleUrlsContent(urls);
+    } else {
+      content = await fetchUrlContent(urls[0] || profileUrl);
+    }
+
     const input = text
-      ? `LinkedIn profile data:\n${content}\n\nAdditional context from user:\n${text}`
-      : `LinkedIn profile data:\n${content}`;
-    extractedProfile = await extractProfileFromText(input);
+      ? `${content}\n\nAdditional context from user:\n${text}`
+      : content;
+    extractedProfile = await extractProfileFromUrl(input, urls[0] || profileUrl);
   } else if (text) {
     extractedProfile = await extractProfileFromText(text);
   } else {
@@ -34,9 +52,13 @@ export const parseProfileInput = asyncHandler(async (req, res) => {
     throw new Error("No input provided. Please upload a document, record audio, or enter text.");
   }
 
-  // Store LinkedIn URL if provided
-  if (linkedinUrl && extractedProfile) {
-    extractedProfile.linkedInUrl = linkedinUrl;
+  // Store URL if provided
+  if (profileUrl && extractedProfile) {
+    // Store the first valid URL
+    const firstUrl = profileUrl
+      .split(/[\s,]+/)
+      .find((u) => u.trim().startsWith("http"));
+    extractedProfile.linkedInUrl = firstUrl || profileUrl;
   }
 
   res.json({ success: true, data: extractedProfile });

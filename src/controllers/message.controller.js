@@ -8,7 +8,7 @@ import { notifyNewMessage } from "../services/notification.service.js";
 // @route   GET /api/consultations/:id/messages
 export const getMessages = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { page = 1, limit = 50 } = req.query;
+  const { page = 1, limit = 25 } = req.query;
 
   // Verify participant access
   const consultation = await prisma.consultation.findUnique({
@@ -34,10 +34,25 @@ export const getMessages = asyncHandler(async (req, res) => {
 
   const skip = (Number(page) - 1) * Number(limit);
 
+  // Use select (not include) to avoid N+1 on nested replyTo.sender.
+  // Prisma batches top-level select queries but can N+1 on nested include relations.
   const [messages, total] = await Promise.all([
     prisma.message.findMany({
       where: { consultationId: id },
-      include: {
+      select: {
+        id: true,
+        consultationId: true,
+        senderId: true,
+        content: true,
+        messageType: true,
+        isRead: true,
+        readAt: true,
+        fileUrl: true,
+        fileName: true,
+        fileSize: true,
+        mimeType: true,
+        replyToId: true,
+        createdAt: true,
         sender: {
           select: { id: true, firstName: true, lastName: true, avatar: true },
         },

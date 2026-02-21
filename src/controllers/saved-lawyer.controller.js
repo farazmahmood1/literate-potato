@@ -51,7 +51,7 @@ export const getSavedLawyers = asyncHandler(async (req, res) => {
     include: {
       lawyerProfile: {
         include: {
-          user: { select: { firstName: true, lastName: true, avatar: true } },
+          user: { select: { id: true, firstName: true, lastName: true, avatar: true, lastActiveAt: true } },
         },
       },
     },

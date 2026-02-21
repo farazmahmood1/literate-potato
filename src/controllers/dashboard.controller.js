@@ -28,11 +28,16 @@ export const getDashboardSummary = asyncHandler(async (req, res) => {
           clientId: userId,
           status: { in: ["PENDING", "ACTIVE"] },
         },
-        include: {
+        select: {
+          id: true, category: true, description: true, status: true, trialEndAt: true,
+          startedAt: true, createdAt: true, lawyerId: true,
           lawyer: {
-            include: { user: { select: { firstName: true, lastName: true, avatar: true } } },
+            select: {
+              id: true, rating: true, specializations: true, consultationRate: true, profilePhoto: true,
+              user: { select: { firstName: true, lastName: true, avatar: true } },
+            },
           },
-          payment: true,
+          payment: { select: { id: true, status: true, amount: true } },
         },
         orderBy: { createdAt: "desc" },
       }),
@@ -44,11 +49,15 @@ export const getDashboardSummary = asyncHandler(async (req, res) => {
           clientId: userId,
           status: { in: ["COMPLETED", "CANCELLED"] },
         },
-        include: {
+        select: {
+          id: true, category: true, status: true, startedAt: true, endedAt: true, createdAt: true, lawyerId: true,
           lawyer: {
-            include: { user: { select: { firstName: true, lastName: true, avatar: true } } },
+            select: {
+              id: true, rating: true, specializations: true, profilePhoto: true,
+              user: { select: { firstName: true, lastName: true, avatar: true } },
+            },
           },
-          payment: true,
+          payment: { select: { id: true, status: true, amount: true } },
         },
         orderBy: { createdAt: "desc" },
         take: 5,
@@ -312,9 +321,10 @@ export const getLawyerDashboardSummary = asyncHandler(async (req, res) => {
         lawyerId: lawyerProfile.id,
         status: "PENDING",
       },
-      include: {
+      select: {
+        id: true, category: true, description: true, status: true, createdAt: true, clientId: true, requestedType: true,
         client: { select: { firstName: true, lastName: true, avatar: true } },
-        payment: true,
+        payment: { select: { id: true, status: true, amount: true } },
       },
       orderBy: { createdAt: "desc" },
     }),
@@ -323,9 +333,10 @@ export const getLawyerDashboardSummary = asyncHandler(async (req, res) => {
         lawyerId: lawyerProfile.id,
         status: { in: ["ACTIVE", "TRIAL"] },
       },
-      include: {
+      select: {
+        id: true, category: true, status: true, trialEndAt: true, updatedAt: true, clientId: true,
         client: { select: { firstName: true, lastName: true, avatar: true } },
-        payment: true,
+        payment: { select: { id: true, status: true, amount: true } },
         messages: {
           orderBy: { createdAt: "desc" },
           take: 1,
@@ -339,10 +350,11 @@ export const getLawyerDashboardSummary = asyncHandler(async (req, res) => {
         lawyerId: lawyerProfile.id,
         status: "COMPLETED",
       },
-      include: {
+      select: {
+        id: true, category: true, status: true, endedAt: true, clientId: true,
         client: { select: { firstName: true, lastName: true, avatar: true } },
-        payment: true,
-        review: true,
+        payment: { select: { id: true, status: true, amount: true } },
+        review: { select: { id: true, rating: true } },
       },
       orderBy: { endedAt: "desc" },
       take: 5,

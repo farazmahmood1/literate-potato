@@ -26,6 +26,29 @@ const expo = new Expo();
 // ─── Active trial timers (keyed by consultationId) ───
 const trialTimers = new Map();
 
+// ─── In-memory unread count cache (avoids DB query on every push notification) ───
+// TTL-based: counts are cached for 30s, then re-fetched from DB.
+const _unreadCountCache = new Map(); // userId → { count, expiry }
+const UNREAD_CACHE_TTL_MS = 30_000;
+
+async function getCachedUnreadCount(userId) {
+  const cached = _unreadCountCache.get(userId);
+  if (cached && cached.expiry > Date.now()) return cached.count;
+
+  const count = await prisma.notification.count({
+    where: { userId, read: false },
+  }).catch(() => undefined);
+
+  if (typeof count === "number") {
+    _unreadCountCache.set(userId, { count, expiry: Date.now() + UNREAD_CACHE_TTL_MS });
+  }
+  return count;
+}
+
+function invalidateUnreadCache(userId) {
+  _unreadCountCache.delete(userId);
+}
+
 // ─── Receipt verification queue ───
 // Expo push notifications are two-step: send → ticket, then check receipt.
 // We collect ticket IDs and periodically verify delivery.
@@ -112,15 +135,18 @@ export async function createInAppNotification(userId, type, title, body, data = 
       data: { userId, type, title, body, data },
     });
 
+    // Invalidate cached count since we just added a notification
+    invalidateUnreadCache(userId);
+
     // Emit real-time socket events
     try {
       const io = getIO();
       io.to(`user:${userId}`).emit("new-notification", notification);
 
-      const unreadCount = await prisma.notification.count({
-        where: { userId, read: false },
-      });
-      io.to(`user:${userId}`).emit("unread-notification-count", { count: unreadCount });
+      const unreadCount = await getCachedUnreadCount(userId);
+      if (typeof unreadCount === "number") {
+        io.to(`user:${userId}`).emit("unread-notification-count", { count: unreadCount });
+      }
     } catch {
       // Socket not initialized yet (e.g. during startup) — silent fail
     }
@@ -219,17 +245,14 @@ export async function sendToUser(userId, title, body, data = {}) {
   });
 
   if (!user || !user.expoPushToken) {
-    // Only log in dev to reduce noise in production
     if (process.env.NODE_ENV !== "production") {
       console.log(`[Push] No push token for user ${userId} — skipping`);
     }
     return null;
   }
 
-  // Query unread count for badge (non-blocking — default to undefined on failure)
-  const badge = await prisma.notification.count({
-    where: { userId, read: false },
-  }).catch(() => undefined);
+  // Use cached unread count for badge (avoids DB query per push)
+  const badge = await getCachedUnreadCount(userId);
 
   return sendPushNotification(user.expoPushToken, title, body, data, userId, badge);
 }
@@ -267,10 +290,8 @@ export async function sendToUserIfAllowed(userId, preferenceKey, title, body, da
     return null; // User has opted out
   }
 
-  // Query unread count for badge (non-blocking — default to undefined on failure)
-  const badge = await prisma.notification.count({
-    where: { userId, read: false },
-  }).catch(() => undefined);
+  // Use cached unread count for badge (avoids DB query per push)
+  const badge = await getCachedUnreadCount(userId);
 
   return sendPushNotification(user.expoPushToken, title, body, data, userId, badge);
 }
@@ -778,20 +799,20 @@ export function notifyPasswordChanged(userId) {
 // ─────────────────────────────────────────────────────
 
 /**
- * Notify a lawyer about a new job post in their state.
+ * Notify a lawyer about a new job post matching their category.
  */
-export function notifyNewJobPost(lawyerUserId, clientName, category, state, jobPostId, description) {
+export function notifyNewJobPost(lawyerUserId, clientName, category, jobPostId) {
   sendToUserIfAllowed(lawyerUserId, "consultationUpdates", "New Job Post",
-    `${clientName} needs help with ${category} in ${state}. First 3 min free.`,
-    { type: "new_job_post", jobPostId, category, state }
+    `${clientName} needs help with ${category}. First 3 min free.`,
+    { type: "new_job_post", jobPostId, category }
   );
 
-  emailNewJobPost(lawyerUserId, clientName, category, state, description, jobPostId);
+  emailNewJobPost(lawyerUserId, clientName, category, "", "", jobPostId);
 
   // In-app
   createInAppNotification(lawyerUserId, "new_job_post", "New Job Post",
-    `${clientName} needs help with ${category} in ${state}. First 3 min free.`,
-    { jobPostId, category, state }
+    `${clientName} needs help with ${category}. First 3 min free.`,
+    { jobPostId, category }
   );
 }
 

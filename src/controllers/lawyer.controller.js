@@ -2,7 +2,8 @@ import asyncHandler from "express-async-handler";
 import prisma from "../lib/prisma.js";
 import cloudinary from "../config/cloudinary.js";
 import { notifyProfileViewed } from "../services/notification.service.js";
-import { normalizeStateToAbbr } from "../utils/stateNormalize.js";
+import { normalizeStateToAbbr, getStateVariants } from "../utils/stateNormalize.js";
+import { isUserOnline } from "../config/socket.js";
 
 // @desc    Create lawyer profile
 // @route   POST /api/lawyers/profile
@@ -96,7 +97,17 @@ export const getLawyers = asyncHandler(async (req, res) => {
 
   // Existing filters
   if (specialization) where.specializations = { has: specialization };
-  if (state) where.licenseState = state;
+  // State filter: match both abbreviation and full name (e.g. "CA" matches "California")
+  if (state) {
+    const variants = getStateVariants(state);
+    if (variants.length > 1) {
+      where.OR = variants.map((v) => ({ licenseState: { equals: v, mode: "insensitive" } }));
+    } else if (variants.length === 1) {
+      where.licenseState = { equals: variants[0], mode: "insensitive" };
+    } else {
+      where.licenseState = state;
+    }
+  }
   if (available !== undefined) where.isAvailable = available === "true";
 
   // Online status filter
@@ -184,9 +195,79 @@ export const recordProfileView = asyncHandler(async (req, res) => {
   if (lawyer.userId !== req.user.id) {
     const viewerName = `${req.user.firstName} ${req.user.lastName?.charAt(0) || ""}`.trim() + ".";
     notifyProfileViewed(lawyer.userId, viewerName);
+
+    // Store/update view record for "recently viewed" feature
+    await prisma.lawyerView.upsert({
+      where: {
+        userId_lawyerProfileId: {
+          userId: req.user.id,
+          lawyerProfileId: req.params.id,
+        },
+      },
+      update: { viewedAt: new Date() },
+      create: {
+        userId: req.user.id,
+        lawyerProfileId: req.params.id,
+      },
+    });
   }
 
   res.json({ success: true });
+});
+
+// @desc    Get lawyers the client has previously hired (had ACTIVE or COMPLETED consultations with)
+// @route   GET /api/lawyers/hired
+export const getHiredLawyers = asyncHandler(async (req, res) => {
+  // Find distinct lawyer IDs from consultations that went to ACTIVE or COMPLETED
+  const consultations = await prisma.consultation.findMany({
+    where: {
+      clientId: req.user.id,
+      status: { in: ["ACTIVE", "COMPLETED"] },
+    },
+    select: { lawyerId: true },
+    distinct: ["lawyerId"],
+    orderBy: { updatedAt: "desc" },
+  });
+
+  const lawyerIds = consultations.map((c) => c.lawyerId);
+
+  if (lawyerIds.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  const lawyers = await prisma.lawyerProfile.findMany({
+    where: { id: { in: lawyerIds } },
+    include: {
+      user: { select: { id: true, firstName: true, lastName: true, avatar: true, lastActiveAt: true } },
+    },
+  });
+
+  // Preserve the order from consultations (most recently updated first)
+  const orderMap = new Map(lawyerIds.map((id, i) => [id, i]));
+  lawyers.sort((a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0));
+
+  res.json({ success: true, data: lawyers });
+});
+
+// @desc    Get last 5 recently viewed lawyers for the client
+// @route   GET /api/lawyers/recently-viewed
+export const getRecentlyViewedLawyers = asyncHandler(async (req, res) => {
+  const views = await prisma.lawyerView.findMany({
+    where: { userId: req.user.id },
+    orderBy: { viewedAt: "desc" },
+    take: 5,
+    include: {
+      lawyerProfile: {
+        include: {
+          user: { select: { id: true, firstName: true, lastName: true, avatar: true, lastActiveAt: true } },
+        },
+      },
+    },
+  });
+
+  const lawyers = views.map((v) => v.lawyerProfile);
+  res.json({ success: true, data: lawyers });
 });
 
 // @desc    Update lawyer profile

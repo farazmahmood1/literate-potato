@@ -1,4 +1,4 @@
-import gemini from "../config/gemini.js";
+import openai from "../config/openai.js";
 
 function buildModerationPrompt(content, senderRole) {
   return `You are a content moderation system for a legal services platform where lawyers and clients communicate. Analyze the following message and determine if it should be blocked.
@@ -23,7 +23,7 @@ BLOCK these:
 - PHISHING: Requests to click suspicious links, requests for passwords or login credentials, fake payment links
 - IMPERSONATION: Falsely claiming to be a judge, law enforcement officer, or government official
 
-Respond with ONLY valid JSON (no markdown fences):
+Respond with ONLY valid JSON:
 {"allowed": true}
 or
 {"allowed": false, "reason": "Brief user-friendly explanation", "category": "CATEGORY_NAME"}
@@ -34,13 +34,8 @@ ${content}
 """`;
 }
 
-function parseModResult(text) {
-  const cleaned = text.trim().replace(/^```json?\s*/, "").replace(/\s*```$/, "");
-  return JSON.parse(cleaned);
-}
-
 /**
- * Moderate a chat message using Gemini 2.0 Flash.
+ * Moderate a chat message using OpenAI GPT-5.2.
  *
  * @param {string} content - The message text to moderate
  * @param {object} context - Optional context about the sender
@@ -49,8 +44,8 @@ function parseModResult(text) {
  * @returns {Promise<{ allowed: boolean, reason?: string, category?: string }>}
  */
 export async function moderateMessage(content, context = {}) {
-  if (!gemini) {
-    console.warn("[Moderation] Gemini not configured — allowing message (fail-open)");
+  if (!openai) {
+    console.warn("[Moderation] OpenAI not configured — allowing message (fail-open)");
     return { allowed: true };
   }
 
@@ -59,14 +54,25 @@ export async function moderateMessage(content, context = {}) {
   }
 
   try {
-    const model = gemini.getGenerativeModel({ model: "gemini-2.0-flash" });
     const prompt = buildModerationPrompt(content, context.senderRole);
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    const parsed = parseModResult(text);
+
+    // AbortController with 3s timeout — prevents slow OpenAI responses from blocking messages
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-5.2",
+      response_format: { type: "json_object" },
+      messages: [{ role: "user", content: prompt }],
+      max_completion_tokens: 150,
+    }, { signal: controller.signal });
+
+    clearTimeout(timeoutId);
+
+    const parsed = JSON.parse(response.choices[0].message.content);
 
     if (typeof parsed.allowed !== "boolean") {
-      console.warn("[Moderation] Invalid Gemini response shape — allowing (fail-open):", text);
+      console.warn("[Moderation] Invalid OpenAI response shape — allowing (fail-open):", response.choices[0].message.content);
       return { allowed: true };
     }
 
@@ -80,7 +86,11 @@ export async function moderateMessage(content, context = {}) {
       category: parsed.category || undefined,
     };
   } catch (err) {
-    console.error("[Moderation] Gemini API error — allowing message (fail-open):", err.message);
+    if (err.name === "AbortError") {
+      console.warn("[Moderation] OpenAI timeout (3s) — allowing message (fail-open)");
+    } else {
+      console.error("[Moderation] OpenAI API error — allowing message (fail-open):", err.message);
+    }
     return { allowed: true };
   }
 }

@@ -73,10 +73,13 @@ export const uploadFile = asyncHandler(async (req, res) => {
     },
   });
 
-  // Broadcast to consultation room via Socket.io
+  // Broadcast to consultation room + individual user rooms via Socket.io
+  // (mirrors text message broadcasting in socket.js for reliable delivery)
   try {
     const io = getIO();
     io.to(`consultation:${consultationId}`).emit("new-message", message);
+    io.to(`user:${consultation.lawyer.userId}`).emit("new-message", message);
+    io.to(`user:${consultation.clientId}`).emit("new-message", message);
   } catch {
     // Socket emit is best-effort — don't fail the upload
   }

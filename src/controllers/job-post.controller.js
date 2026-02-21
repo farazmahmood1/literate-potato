@@ -1,6 +1,6 @@
 import asyncHandler from "express-async-handler";
 import prisma from "../lib/prisma.js";
-import { getIO } from "../config/socket.js";
+import { getIO, isUserOnline } from "../config/socket.js";
 import {
   notifyNewJobPost,
   notifyJobPostAccepted,
@@ -8,9 +8,82 @@ import {
   scheduleTrialNotifications,
   createInAppNotification,
 } from "../services/notification.service.js";
-import { getStateVariants, stateMatchesLicenseState } from "../utils/stateNormalize.js";
 
-// @desc    Create a job post (broadcast to all lawyers, or targeted to one)
+// ─── Shared helper: record a job-post view for a lawyer ───
+// Returns the new total viewCount (or null if the view already existed / was skipped).
+async function recordJobPostView(jobPostId, lawyerUserId) {
+  const lawyerProfile = await prisma.lawyerProfile.findUnique({
+    where: { userId: lawyerUserId },
+    select: { id: true, user: { select: { firstName: true, lastName: true } } },
+  });
+  if (!lawyerProfile) return null;
+
+  const lawyerName = `${lawyerProfile.user.firstName} ${lawyerProfile.user.lastName}`;
+
+  // Upsert to avoid check-then-create race condition (single query instead of 2)
+  try {
+    await prisma.jobPostView.create({
+      data: {
+        jobPostId,
+        lawyerId: lawyerProfile.id,
+        lawyerName,
+      },
+    });
+  } catch (err) {
+    // Unique constraint violation = already viewed — skip
+    if (err.code === "P2002") return null;
+    throw err;
+  }
+
+  // Count total views for this post
+  const viewCount = await prisma.jobPostView.count({
+    where: { jobPostId },
+  });
+
+  // Notify the client (job post creator) in real-time
+  try {
+    const jobPost = await prisma.jobPost.findUnique({
+      where: { id: jobPostId },
+      select: { clientId: true },
+    });
+    if (jobPost) {
+      const io = getIO();
+      io.to(`user:${jobPost.clientId}`).emit("job-post-viewed", {
+        jobPostId,
+        viewCount,
+        lawyerName,
+      });
+    }
+  } catch (socketErr) {
+    console.warn("[JobPost] Socket emit error in recordJobPostView:", socketErr?.message);
+  }
+
+  return viewCount;
+}
+
+// ─── Batch helper: record views for multiple job posts at once ───
+// Single profile lookup, then parallel upserts. Used in getJobPosts to avoid N+1.
+async function recordJobPostViewBatch(jobPostIds, lawyerUserId) {
+  const lawyerProfile = await prisma.lawyerProfile.findUnique({
+    where: { userId: lawyerUserId },
+    select: { id: true, user: { select: { firstName: true, lastName: true } } },
+  });
+  if (!lawyerProfile) return;
+
+  const lawyerName = `${lawyerProfile.user.firstName} ${lawyerProfile.user.lastName}`;
+
+  // Use createMany with skipDuplicates — single query for all views
+  await prisma.jobPostView.createMany({
+    data: jobPostIds.map((jobPostId) => ({
+      jobPostId,
+      lawyerId: lawyerProfile.id,
+      lawyerName,
+    })),
+    skipDuplicates: true,
+  });
+}
+
+// @desc    Create a job post (broadcast to online lawyers in category, or targeted to one)
 // @route   POST /api/job-posts
 export const createJobPost = asyncHandler(async (req, res) => {
   const { category, state, urgency, description, summary, targetLawyerId } = req.body;
@@ -36,7 +109,7 @@ export const createJobPost = asyncHandler(async (req, res) => {
   let lawyersToNotify = [];
 
   if (targetLawyerId) {
-    // Targeted invite — only notify the specific lawyer (bypass state/verification filters)
+    // Targeted invite — only notify the specific lawyer (bypass category/online filters)
     const targetLawyer = await prisma.lawyerProfile.findUnique({
       where: { id: targetLawyerId },
       include: {
@@ -51,33 +124,39 @@ export const createJobPost = asyncHandler(async (req, res) => {
 
     lawyersToNotify = [targetLawyer];
   } else {
-    // Broadcast — find ALL verified lawyers licensed in the job post's state.
-    // All lawyers (online, offline, busy) see job posts on their dashboard.
-    // Notification filtering (skip push/in-app for busy) happens in the loop below.
-    // Uses state variant matching to handle abbreviation ↔ full name mismatch
-    // (e.g. job state "CA" must match lawyer licenseState "California").
-    lawyersToNotify = await prisma.lawyerProfile.findMany({
+    // Broadcast — find verified lawyers whose specializations include the
+    // job's category AND who are currently online (real-time socket check).
+    // Step 1: Query DB for verified lawyers matching the category.
+    const candidateLawyers = await prisma.lawyerProfile.findMany({
       where: {
         verificationStatus: "VERIFIED",
-        ...stateMatchesLicenseState(state),
+        specializations: { has: category },
       },
       include: {
         user: { select: { id: true, expoPushToken: true } },
       },
     });
+
+    // Step 2: Filter to only lawyers confirmed online via real-time socket
+    // presence (not stale DB field). This ensures the client sees an accurate
+    // count and only truly reachable lawyers are notified.
+    lawyersToNotify = candidateLawyers.filter(
+      (l) => isUserOnline(l.user.id)
+    );
   }
 
-  // Compute online count before creating
-  const onlineLawyersCount = lawyersToNotify.filter(
-    (l) => l.onlineStatus === "online"
-  ).length;
+  // All matched lawyers are online (for broadcast), so count equals length
+  const onlineLawyersCount = targetLawyerId
+    ? lawyersToNotify.filter((l) => isUserOnline(l.user.id)).length
+    : lawyersToNotify.length;
 
   // Create job post with 15min expiry — store lawyersNotified count + onlineLawyersCount
+  // State is kept for informational display but NOT used for filtering
   const jobPost = await prisma.jobPost.create({
     data: {
       clientId: req.user.id,
       category,
-      state,
+      state: state || "",
       urgency: urgency || "medium",
       description,
       summary: summary || description.substring(0, 300),
@@ -95,50 +174,17 @@ export const createJobPost = asyncHandler(async (req, res) => {
 
   const lawyersWithTokens = lawyersToNotify.filter((l) => l.user.expoPushToken);
   console.log(
-    `[JobPost] Created ${jobPost.id}${targetLawyerId ? " (targeted)" : ""} — ${lawyersToNotify.length} lawyers matched (${onlineLawyersCount} online, ${lawyersWithTokens.length} with push tokens)`,
+    `[JobPost] Created ${jobPost.id}${targetLawyerId ? " (targeted)" : ""} — ${lawyersToNotify.length} lawyers matched (${onlineLawyersCount} online, ${lawyersWithTokens.length} with push tokens) [category=${category}]`,
   );
   if (lawyersToNotify.length === 0) {
-    console.log(`[JobPost] No lawyers matched. Filters: state=${state}, verificationStatus=VERIFIED. Check if test lawyers are verified.`);
+    console.log(`[JobPost] No online lawyers matched. Filters: category=${category}, verificationStatus=VERIFIED, onlineStatus=real-time socket. Check if lawyers are online and have "${category}" in specializations.`);
   }
   for (const l of lawyersToNotify) {
     console.log(`[JobPost]   → Lawyer ${l.id} (userId: ${l.user.id}), status: ${l.onlineStatus}, token: ${l.user.expoPushToken ? 'yes' : 'NO'}`);
   }
 
-  // Send push notification + socket event to each lawyer
-  for (const lawyer of lawyersToNotify) {
-    // Socket notification
-    try {
-      const io = getIO();
-      io.to(`user:${lawyer.user.id}`).emit("new-job-post", {
-        jobPostId: jobPost.id,
-        category,
-        state,
-        urgency: jobPost.urgency,
-        summary: jobPost.summary,
-        clientName,
-        createdAt: jobPost.createdAt,
-        isDirectInvite: !!targetLawyerId,
-      });
-    } catch (err) {
-      console.warn("[JobPost] Socket emit error:", err?.message);
-    }
-
-    // Targeted invites: always send full notifications (client specifically chose this lawyer)
-    // Broadcast: skip push/email for busy lawyers, but still create in-app notification
-    if (targetLawyerId || lawyer.onlineStatus !== "busy") {
-      notifyNewJobPost(lawyer.user.id, clientName, category, state, jobPost.id);
-    } else {
-      // Busy lawyers on broadcast still get an in-app notification (visible after they finish)
-      createInAppNotification(
-        lawyer.user.id,
-        "new_job_post",
-        "New Job Post",
-        `${clientName} needs help with ${category} in ${state}. First 3 min free.`,
-        { jobPostId: jobPost.id, category, state }
-      );
-    }
-  }
-
+  // Respond immediately — dispatch notifications async (fire-and-forget).
+  // This prevents the client from timing out when notifying 100+ lawyers.
   res.status(201).json({
     success: true,
     data: {
@@ -147,9 +193,31 @@ export const createJobPost = asyncHandler(async (req, res) => {
       onlineLawyersCount,
     },
   });
+
+  // Fire-and-forget: send socket events + push notifications after response
+  setImmediate(() => {
+    for (const lawyer of lawyersToNotify) {
+      try {
+        const io = getIO();
+        io.to(`user:${lawyer.user.id}`).emit("new-job-post", {
+          jobPostId: jobPost.id,
+          category,
+          urgency: jobPost.urgency,
+          summary: jobPost.summary,
+          clientName,
+          createdAt: jobPost.createdAt,
+          isDirectInvite: !!targetLawyerId,
+        });
+      } catch (err) {
+        console.warn("[JobPost] Socket emit error:", err?.message);
+      }
+
+      notifyNewJobPost(lawyer.user.id, clientName, category, jobPost.id);
+    }
+  });
 });
 
-// @desc    Get job posts for lawyers (in their state)
+// @desc    Get job posts for lawyers (matching their specializations)
 // @route   GET /api/job-posts
 export const getJobPosts = asyncHandler(async (req, res) => {
   const { status = "OPEN", page = 1, limit = 20 } = req.query;
@@ -157,11 +225,11 @@ export const getJobPosts = asyncHandler(async (req, res) => {
   let where = {};
 
   if (req.user.role === "LAWYER") {
-    // Lawyers see open job posts filtered by their licensed state,
-    // PLUS any posts directly targeted to them (bypass state filter)
+    // Lawyers see open job posts whose category matches one of their specializations,
+    // PLUS any posts directly targeted to them (bypass category filter).
     const lawyerProfile = await prisma.lawyerProfile.findUnique({
       where: { userId: req.user.id },
-      select: { id: true, licenseState: true },
+      select: { id: true, specializations: true },
     });
 
     // Exclude posts the lawyer has declined
@@ -169,29 +237,23 @@ export const getJobPosts = asyncHandler(async (req, res) => {
       ? { NOT: { views: { some: { lawyerId: lawyerProfile.id, declined: true } } } }
       : {};
 
-    // Build state-matching conditions using variants to handle
-    // abbreviation ↔ full name mismatch (e.g. licenseState "California"
-    // must match job posts with state "CA" and vice versa).
-    const stateVariants = lawyerProfile?.licenseState
-      ? getStateVariants(lawyerProfile.licenseState)
-      : [];
-
     const statusFilter = status !== "all" ? { status } : {};
 
-    // Each state variant becomes its own OR branch so we can use
-    // case-insensitive equals (Prisma doesn't support mode on `in`).
-    // Also restrict to broadcast posts (targetLawyerId: null) so lawyers
-    // don't see targeted invites meant for other lawyers in the same state.
-    const stateConditions = stateVariants.length > 0
-      ? stateVariants.map((v) => ({
+    // Build category-matching condition: job post category must be in
+    // the lawyer's specializations array (case-insensitive via `in`).
+    const specializations = lawyerProfile?.specializations || [];
+
+    // Broadcast posts matching the lawyer's specializations
+    const categoryCondition = specializations.length > 0
+      ? {
           ...statusFilter,
-          state: { equals: v, mode: "insensitive" },
+          category: { in: specializations, mode: "insensitive" },
           targetLawyerId: null,
           ...declinedFilter,
-        }))
-      : [{ ...statusFilter, targetLawyerId: null, ...declinedFilter }];
+        }
+      : { ...statusFilter, targetLawyerId: null, ...declinedFilter, id: "NONE" }; // No specializations = no broadcast matches
 
-    // Targeted posts: posts specifically addressed to this lawyer (any state)
+    // Targeted posts: posts specifically addressed to this lawyer (any category)
     const targetedFilter = {
       targetLawyerId: lawyerProfile?.id,
       ...statusFilter,
@@ -199,11 +261,11 @@ export const getJobPosts = asyncHandler(async (req, res) => {
     };
 
     where = {
-      OR: [...stateConditions, targetedFilter],
+      OR: [categoryCondition, targetedFilter],
     };
 
     if (process.env.NODE_ENV !== "production") {
-      console.log(`[JobPost GET] lawyer=${req.user.id}, licenseState=${lawyerProfile?.licenseState}, variants=${JSON.stringify(stateVariants)}`);
+      console.log(`[JobPost GET] lawyer=${req.user.id}, specializations=${JSON.stringify(specializations)}`);
     }
   } else {
     // Clients see their own job posts
@@ -239,60 +301,20 @@ export const getJobPosts = asyncHandler(async (req, res) => {
     console.log(`[JobPost GET] Found ${total} job posts (returned ${jobPosts.length})`);
   }
 
-  // Track views for LAWYER users viewing OPEN posts
+  // Track views for LAWYER users viewing OPEN posts.
+  // Fire-and-forget a SINGLE batched view recording to avoid N+1 queries.
+  // The frontend also records views explicitly via POST /:id/view on first sight,
+  // so we don't need to block the response on this.
   if (req.user.role === "LAWYER" && jobPosts.length > 0) {
-    try {
-      const lawyerProfile = await prisma.lawyerProfile.findUnique({
-        where: { userId: req.user.id },
-        include: { user: { select: { firstName: true, lastName: true } } },
+    const openPostIds = jobPosts.filter((jp) => jp.status === "OPEN").map((jp) => jp.id);
+    if (openPostIds.length > 0) {
+      // Fire-and-forget — don't await, don't block response
+      recordJobPostViewBatch(openPostIds, req.user.id).catch((err) => {
+        console.warn("[JobPost] Batch view tracking error:", err?.message);
       });
-
-      if (lawyerProfile) {
-        const lawyerName = `${lawyerProfile.user.firstName} ${lawyerProfile.user.lastName}`;
-        const io = getIO();
-
-        for (const jp of jobPosts) {
-          if (jp.status !== "OPEN") continue;
-
-          const existing = await prisma.jobPostView.findUnique({
-            where: {
-              jobPostId_lawyerId: {
-                jobPostId: jp.id,
-                lawyerId: lawyerProfile.id,
-              },
-            },
-          });
-
-          if (!existing) {
-            await prisma.jobPostView.create({
-              data: {
-                jobPostId: jp.id,
-                lawyerId: lawyerProfile.id,
-                lawyerName,
-              },
-            });
-
-            const viewCount = await prisma.jobPostView.count({
-              where: { jobPostId: jp.id },
-            });
-
-            io.to(`user:${jp.clientId}`).emit("job-post-viewed", {
-              jobPostId: jp.id,
-              viewCount,
-              lawyerName,
-            });
-          }
-        }
-      }
-    } catch (err) {
-      // Silent fail for view tracking
-      if (process.env.NODE_ENV !== "production") {
-        console.warn("View tracking error:", err.message);
-      }
     }
   }
 
-  // Map viewCount from _count onto each job post
   const enriched = jobPosts.map((jp) => ({
     ...jp,
     viewCount: jp._count?.views ?? 0,
@@ -340,14 +362,53 @@ export const getJobPost = asyncHandler(async (req, res) => {
     throw new Error("Job post not found");
   }
 
+  // Track view when a LAWYER fetches a single job post
+  let viewCount = jobPost._count.views;
+  if (req.user.role === "LAWYER" && jobPost.status === "OPEN") {
+    try {
+      const newCount = await recordJobPostView(jobPost.id, req.user.id);
+      if (newCount !== null) viewCount = newCount;
+    } catch (err) {
+      console.warn("[JobPost] View tracking error (getOne):", err?.message);
+    }
+  }
+
   res.json({
     success: true,
     data: {
       ...jobPost,
-      viewCount: jobPost._count.views,
+      viewCount,
       recentViewers: jobPost.views,
     },
   });
+});
+
+// @desc    Record a view for a job post (explicit frontend call)
+// @route   POST /api/job-posts/:id/view
+export const recordView = asyncHandler(async (req, res) => {
+  if (req.user.role !== "LAWYER") {
+    res.status(403);
+    throw new Error("Only lawyers can record views");
+  }
+
+  const jobPost = await prisma.jobPost.findUnique({
+    where: { id: req.params.id },
+    select: { id: true, status: true },
+  });
+
+  if (!jobPost) {
+    res.status(404);
+    throw new Error("Job post not found");
+  }
+
+  const newCount = await recordJobPostView(jobPost.id, req.user.id);
+
+  // Return current count whether this was a new or existing view
+  const viewCount = newCount ?? await prisma.jobPostView.count({
+    where: { jobPostId: jobPost.id },
+  });
+
+  res.json({ success: true, data: { viewCount } });
 });
 
 // @desc    Lawyer accepts a job post → creates consultation with trial
@@ -477,15 +538,15 @@ export const acceptJobPost = asyncHandler(async (req, res) => {
     io.to(`user:${jobPost.clientId}`).emit("new-message", firstMessage);
     io.to(`user:${req.user.id}`).emit("new-message", firstMessage);
 
-    // Notify lawyers in the same state that this job post is taken
-    const lawyersInState = await prisma.lawyerProfile.findMany({
+    // Notify lawyers in the same category that this job post is taken
+    const lawyersInCategory = await prisma.lawyerProfile.findMany({
       where: {
         verificationStatus: "VERIFIED",
-        ...stateMatchesLicenseState(jobPost.state),
+        specializations: { has: jobPost.category },
       },
       select: { userId: true },
     });
-    for (const lp of lawyersInState) {
+    for (const lp of lawyersInCategory) {
       io.to(`user:${lp.userId}`).emit("job-post-status-change", {
         jobPostId: jobPost.id,
         status: "ACCEPTED",
@@ -583,17 +644,17 @@ export const closeJobPost = asyncHandler(async (req, res) => {
     data: { status: "CLOSED" },
   });
 
-  // Notify lawyers in the same state via socket
+  // Notify lawyers in the same category via socket
   try {
     const io = getIO();
-    const lawyersInState = await prisma.lawyerProfile.findMany({
+    const lawyersInCategory = await prisma.lawyerProfile.findMany({
       where: {
         verificationStatus: "VERIFIED",
-        ...stateMatchesLicenseState(jobPost.state),
+        specializations: { has: jobPost.category },
       },
       select: { userId: true },
     });
-    for (const lp of lawyersInState) {
+    for (const lp of lawyersInCategory) {
       io.to(`user:${lp.userId}`).emit("job-post-status-change", {
         jobPostId: jobPost.id,
         status: "CLOSED",
@@ -634,14 +695,14 @@ export const deleteJobPost = asyncHandler(async (req, res) => {
   if (jobPost.status === "OPEN") {
     try {
       const io = getIO();
-      const lawyersInState = await prisma.lawyerProfile.findMany({
+      const lawyersInCategory = await prisma.lawyerProfile.findMany({
         where: {
           verificationStatus: "VERIFIED",
-          ...stateMatchesLicenseState(jobPost.state),
+          specializations: { has: jobPost.category },
         },
         select: { userId: true },
       });
-      for (const lp of lawyersInState) {
+      for (const lp of lawyersInCategory) {
         io.to(`user:${lp.userId}`).emit("job-post-status-change", {
           jobPostId: jobPost.id,
           status: "CLOSED",
@@ -656,6 +717,56 @@ export const deleteJobPost = asyncHandler(async (req, res) => {
   await prisma.jobPost.delete({ where: { id: req.params.id } });
 
   res.json({ success: true, message: "Job post deleted" });
+});
+
+// @desc    Get lawyers currently online (live socket presence) matching a job post's category
+// @route   GET /api/job-posts/:id/online-lawyers
+export const getOnlineLawyersForJob = asyncHandler(async (req, res) => {
+  const jobPost = await prisma.jobPost.findUnique({
+    where: { id: req.params.id },
+    select: { id: true, clientId: true, category: true },
+  });
+
+  if (!jobPost) {
+    res.status(404);
+    throw new Error("Job post not found");
+  }
+
+  if (jobPost.clientId !== req.user.id) {
+    res.status(403);
+    throw new Error("Not authorized");
+  }
+
+  // Step 1: Query DB for verified lawyers whose specializations include the category
+  const candidateLawyers = await prisma.lawyerProfile.findMany({
+    where: {
+      verificationStatus: "VERIFIED",
+      specializations: { has: jobPost.category },
+    },
+    include: {
+      user: { select: { id: true, firstName: true, lastName: true, avatar: true } },
+      reviews: {
+        where: { status: "APPROVED" },
+        select: { rating: true },
+      },
+    },
+  });
+
+  // Step 2: Filter to only lawyers confirmed online via real-time socket presence
+  // This is the SAME check used in createJobPost — isUserOnline() reads the
+  // in-memory connectedUsers Map, NOT the stale DB onlineStatus field.
+  const onlineLawyers = candidateLawyers.filter(
+    (l) => isUserOnline(l.user.id)
+  );
+
+  console.log(
+    `[JobPost] Online lawyers for ${jobPost.id}: ${onlineLawyers.length}/${candidateLawyers.length} online [category=${jobPost.category}]`
+  );
+
+  res.json({
+    success: true,
+    data: onlineLawyers,
+  });
 });
 
 // ─── Background task: expire stale OPEN job posts ───
@@ -683,14 +794,14 @@ export function startJobPostExpiryTask() {
               status: "EXPIRED",
               updatedAt: { gte: new Date(Date.now() - INTERVAL_MS) },
             },
-            select: { id: true, state: true },
+            select: { id: true, category: true },
           });
 
           for (const post of expiredPosts) {
             const lawyers = await prisma.lawyerProfile.findMany({
               where: {
                 verificationStatus: "VERIFIED",
-                ...stateMatchesLicenseState(post.state),
+                specializations: { has: post.category },
               },
               select: { userId: true },
             });

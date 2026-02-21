@@ -2,6 +2,7 @@ import cron from "node-cron";
 import prisma from "../lib/prisma.js";
 import { emailWeeklyLawyerSummary } from "../services/email.service.js";
 import { notifyDisputeDeadline } from "../services/notification.service.js";
+import { getIO } from "./socket.js";
 
 // Mark stale pending consultations as cancelled (older than 24h)
 cron.schedule("0 */6 * * *", async () => {
@@ -26,16 +27,41 @@ cron.schedule("0 */6 * * *", async () => {
 cron.schedule("*/5 * * * *", async () => {
   try {
     const cutoff = new Date(Date.now() - 15 * 60 * 1000);
-    const result = await prisma.lawyerProfile.updateMany({
+
+    // Find affected lawyers BEFORE updating so we can broadcast socket events
+    const staleProfiles = await prisma.lawyerProfile.findMany({
       where: {
         onlineStatus: { in: ["online", "busy"] },
         lastActiveAt: { lt: cutoff },
       },
+      select: { id: true, userId: true },
+    });
+
+    if (staleProfiles.length === 0) return;
+
+    // Bulk-update DB
+    await prisma.lawyerProfile.updateMany({
+      where: { id: { in: staleProfiles.map((p) => p.id) } },
       data: { onlineStatus: "offline", isAvailable: false },
     });
-    if (result.count > 0) {
-      console.log(`[CRON] Set ${result.count} inactive lawyers to offline`);
-    }
+
+    // Broadcast status change to all connected clients
+    try {
+      const io = getIO();
+      for (const profile of staleProfiles) {
+        io.emit("lawyer-status-change", {
+          lawyerId: profile.id,
+          userId: profile.userId,
+          status: "offline",
+        });
+        io.emit("user-status-change", {
+          userId: profile.userId,
+          status: "offline",
+        });
+      }
+    } catch {}
+
+    console.log(`[CRON] Set ${staleProfiles.length} inactive lawyers to offline`);
   } catch (error) {
     console.error("[CRON] Error setting inactive lawyers offline:", error);
   }

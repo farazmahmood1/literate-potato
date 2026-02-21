@@ -80,7 +80,35 @@ export const getMe = asyncHandler(async (req, res) => {
 // @desc    Clerk webhook - sync user data on changes
 // @route   POST /api/auth/webhook
 export const clerkWebhook = asyncHandler(async (req, res) => {
-  const { type, data } = req.body;
+  // Verify webhook signature with svix (if CLERK_WEBHOOK_SECRET is configured)
+  const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
+  if (WEBHOOK_SECRET) {
+    const { Webhook } = await import("svix");
+    const wh = new Webhook(WEBHOOK_SECRET);
+    const headers = {
+      "svix-id": req.headers["svix-id"],
+      "svix-timestamp": req.headers["svix-timestamp"],
+      "svix-signature": req.headers["svix-signature"],
+    };
+
+    if (!headers["svix-id"] || !headers["svix-timestamp"] || !headers["svix-signature"]) {
+      res.status(400);
+      throw new Error("Missing svix headers");
+    }
+
+    try {
+      const rawBody = Buffer.isBuffer(req.body) ? req.body.toString() : JSON.stringify(req.body);
+      wh.verify(rawBody, headers);
+    } catch (err) {
+      console.error("[Webhook] Signature verification failed:", err?.message);
+      res.status(401);
+      throw new Error("Invalid webhook signature");
+    }
+  }
+
+  // Parse body — may be raw Buffer (from express.raw) or already-parsed JSON
+  const body = Buffer.isBuffer(req.body) ? JSON.parse(req.body.toString()) : req.body;
+  const { type, data } = body;
 
   if (type === "user.created" || type === "user.updated") {
     const { id, email_addresses, first_name, last_name, image_url } = data;

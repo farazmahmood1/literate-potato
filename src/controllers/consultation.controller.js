@@ -1,6 +1,6 @@
 import asyncHandler from "express-async-handler";
 import prisma from "../lib/prisma.js";
-import gemini from "../config/gemini.js";
+import openai from "../config/openai.js";
 import { getIO } from "../config/socket.js";
 import { generateConsultationSummary } from "../services/summary.service.js";
 import {
@@ -112,9 +112,8 @@ function analyzeWithKeywords(description) {
 export const analyzeIssue = asyncHandler(async (req, res) => {
   const { description } = req.body;
 
-  if (gemini) {
+  if (openai) {
     try {
-      const model = gemini.getGenerativeModel({ model: "gemini-2.0-flash" });
       const prompt = `You are a legal issue classifier. Analyze this legal issue and return a JSON object with exactly these fields:
 - "category": one of ${JSON.stringify(LEGAL_CATEGORIES)}
 - "categoryConfidence": a number between 0.0 and 1.0 indicating your confidence in the category classification
@@ -127,11 +126,14 @@ Return ONLY valid JSON, no other text.
 
 Legal issue: ${description}`;
 
-      const result = await model.generateContent(prompt);
-      const text = result.response.text().trim();
-      // Strip markdown code fences if present
-      const jsonStr = text.replace(/^```json?\s*/, "").replace(/\s*```$/, "");
-      const parsed = JSON.parse(jsonStr);
+      const response = await openai.chat.completions.create({
+        model: "gpt-5.2",
+        response_format: { type: "json_object" },
+        messages: [{ role: "user", content: prompt }],
+        max_completion_tokens: 500,
+      });
+
+      const parsed = JSON.parse(response.choices[0].message.content);
 
       if (!LEGAL_CATEGORIES.includes(parsed.category)) {
         parsed.category = "Business & Contract";
@@ -152,7 +154,7 @@ Legal issue: ${description}`;
       res.json({ success: true, data: parsed });
       return;
     } catch (error) {
-      console.error("Gemini analysis failed, falling back to keywords:", error.message);
+      console.error("OpenAI analysis failed, falling back to keywords:", error.message);
     }
   }
 
@@ -577,7 +579,8 @@ export const requestConsultation = asyncHandler(async (req, res) => {
 export const getRecentContacts = asyncHandler(async (req, res) => {
   const { search } = req.query;
 
-  // Find all consultations for this user with distinct other-party lawyers
+  // Find recent consultations for this user with distinct other-party lawyers.
+  // Cap at 100 rows to prevent unbounded queries for very active users.
   const consultations = await prisma.consultation.findMany({
     where: { clientId: req.user.id },
     select: {
@@ -604,6 +607,7 @@ export const getRecentContacts = asyncHandler(async (req, res) => {
       },
     },
     orderBy: { updatedAt: "desc" },
+    take: 100,
   });
 
   // Deduplicate by lawyer profile ID, keeping the most recent consultation

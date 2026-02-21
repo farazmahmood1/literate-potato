@@ -9,7 +9,7 @@ import {
 const router = express.Router();
 
 // No protect middleware — these are used during registration before the
-// user has a reliable Clerk session. They only call Gemini and don't
+// user has a reliable Clerk session. They only call OpenAI and don't
 // access user-specific data.
 router.post("/parse", parseProfileInput);
 router.post("/chat", askProfileQuestion);

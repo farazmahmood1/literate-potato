@@ -1,4 +1,4 @@
-import gemini from "../config/gemini.js";
+import openai from "../config/openai.js";
 import prisma from "../lib/prisma.js";
 
 /**
@@ -35,7 +35,7 @@ export async function generateConsultationSummary(consultationId) {
     })
     .join("\n");
 
-  if (!gemini) {
+  if (!openai) {
     // Fallback: basic summary
     const summary = {
       overview: `Consultation about ${consultation.category} between ${clientName} and ${lawyerName}.`,
@@ -52,7 +52,6 @@ export async function generateConsultationSummary(consultationId) {
   }
 
   try {
-    const model = gemini.getGenerativeModel({ model: "gemini-2.0-flash" });
     const prompt = `You are a legal consultation summarizer. Analyze the following chat transcript between a client and a lawyer, and produce a JSON summary with these fields:
 - "overview": A 2-3 sentence overview of the consultation
 - "keyPoints": An array of 3-5 key points discussed
@@ -69,10 +68,20 @@ Lawyer: ${lawyerName}
 Transcript:
 ${transcript.substring(0, 8000)}`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text().trim();
-    const jsonStr = text.replace(/^```json?\s*/, "").replace(/\s*```$/, "");
-    const summary = JSON.parse(jsonStr);
+    // AbortController with 10s timeout — summaries are longer but shouldn't block indefinitely
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-5.2",
+      response_format: { type: "json_object" },
+      messages: [{ role: "user", content: prompt }],
+      max_completion_tokens: 1000,
+    }, { signal: controller.signal });
+
+    clearTimeout(timeoutId);
+
+    const summary = JSON.parse(response.choices[0].message.content);
     summary.messageCount = consultation.messages.length;
 
     await prisma.consultation.update({

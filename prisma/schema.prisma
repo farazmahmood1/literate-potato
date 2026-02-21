@@ -132,6 +132,7 @@ model User {
   notifications         Notification[]
   supportTickets        SupportTicket[]
   ticketReplies         TicketReply[]
+  lawyerViews           LawyerView[]    @relation("UserLawyerViews")
 
   @@map("users")
 }
@@ -174,6 +175,7 @@ model LawyerProfile {
   acceptedJobPosts  JobPost[]      @relation("AcceptedJobPosts")
   targetedJobPosts  JobPost[]      @relation("TargetedJobPosts")
   jobPostViews      JobPostView[]  @relation("LawyerJobPostViews")
+  profileViews      LawyerView[]   @relation("LawyerProfileViews")
 
   @@map("lawyer_profiles")
 }
@@ -206,6 +208,10 @@ model Consultation {
   calls         Call[]
   disputes      Dispute[]
 
+  @@index([clientId, status])
+  @@index([lawyerId, status])
+  @@index([clientId, createdAt(sort: Desc)])
+  @@index([lawyerId, createdAt(sort: Desc)])
   @@map("consultations")
 }
 
@@ -230,6 +236,7 @@ model Message {
   replies         Message[]    @relation("MessageReplies")
 
   @@index([consultationId, createdAt])
+  @@index([senderId, isRead])
   @@map("messages")
 }
 
@@ -246,6 +253,7 @@ model Payment {
   user             User          @relation(fields: [userId], references: [id])
   consultation     Consultation  @relation(fields: [consultationId], references: [id])
 
+  @@index([userId, status])
   @@map("payments")
 }
 
@@ -266,6 +274,7 @@ model Review {
   lawyerProfile   LawyerProfile @relation(fields: [lawyerProfileId], references: [id])
 
   @@index([status])
+  @@index([lawyerProfileId, status])
   @@map("reviews")
 }
 
@@ -298,6 +307,19 @@ model SavedLawyer {
 
   @@unique([userId, lawyerProfileId])
   @@map("saved_lawyers")
+}
+
+model LawyerView {
+  id              String   @id @default(uuid())
+  userId          String
+  lawyerProfileId String
+  viewedAt        DateTime @default(now())
+
+  user            User          @relation("UserLawyerViews", fields: [userId], references: [id], onDelete: Cascade)
+  lawyerProfile   LawyerProfile @relation("LawyerProfileViews", fields: [lawyerProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lawyerProfileId])
+  @@map("lawyer_views")
 }
 
 model Report {
@@ -362,7 +384,7 @@ model JobPost {
   id                 String        @id @default(uuid())
   clientId           String
   category           String
-  state              String
+  state              String        @default("")
   urgency            String        @default("medium")
   description        String
   summary            String
@@ -382,7 +404,9 @@ model JobPost {
   consultation       Consultation?  @relation("JobPostConsultation", fields: [consultationId], references: [id])
   views              JobPostView[]  @relation("JobPostViews")
 
-  @@index([state, status])
+  @@index([category, status])
+  @@index([clientId, status])
+  @@index([status, expiresAt])
   @@map("job_posts")
 }
 

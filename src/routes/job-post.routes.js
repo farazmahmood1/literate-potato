@@ -4,10 +4,12 @@ import {
   createJobPost,
   getJobPosts,
   getJobPost,
+  recordView,
   acceptJobPost,
   declineJobPost,
   closeJobPost,
   deleteJobPost,
+  getOnlineLawyersForJob,
 } from "../controllers/job-post.controller.js";
 import { protect, authorize } from "../middlewares/auth.middleware.js";
 import { validate } from "../middlewares/validate.middleware.js";
@@ -16,7 +18,7 @@ const router = Router();
 
 router.use(protect);
 
-// Client creates a job post (broadcast or targeted invite)
+// Client creates a job post (broadcast to online lawyers in category, or targeted invite)
 router.post(
   "/",
   authorize("CLIENT"),
@@ -28,24 +30,20 @@ router.post(
     body("targetLawyerId").optional().isUUID().withMessage("Invalid target lawyer ID"),
   ],
   validate,
-  // Validate state is required for broadcast posts (no targetLawyerId)
-  (req, res, next) => {
-    if (!req.body.targetLawyerId && !req.body.state) {
-      return res.status(400).json({
-        success: false,
-        errors: [{ msg: "State is required for broadcast job posts" }],
-      });
-    }
-    next();
-  },
   createJobPost
 );
 
-// Get job posts (lawyers see open ones in their state, clients see their own)
+// Get job posts (lawyers see open ones matching their specializations, clients see their own)
 router.get("/", getJobPosts);
 
 // Get single job post
 router.get("/:id", getJobPost);
+
+// Client gets online lawyers matching a job post's category (live socket presence)
+router.get("/:id/online-lawyers", authorize("CLIENT"), getOnlineLawyersForJob);
+
+// Lawyer records a view on a job post
+router.post("/:id/view", authorize("LAWYER"), recordView);
 
 // Lawyer accepts a job post
 router.put("/:id/accept", authorize("LAWYER"), acceptJobPost);

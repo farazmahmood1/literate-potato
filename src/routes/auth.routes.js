@@ -1,11 +1,10 @@
 import { Router } from "express";
-import { syncUser, getMe, clerkWebhook } from "../controllers/auth.controller.js";
+import { syncUser, getMe } from "../controllers/auth.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 
 const router = Router();
 
-// Clerk webhook (no auth required - Clerk calls this)
-router.post("/webhook", clerkWebhook);
+// Note: Clerk webhook is registered in app.js BEFORE JSON parser for svix signature verification
 
 // Sync Clerk user to our DB (requires Clerk session)
 router.post("/sync", syncUser);
